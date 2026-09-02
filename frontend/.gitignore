@@ -1,0 +1,6 @@
+# Vite / React local overrides (root .gitignore covers most patterns)
+node_modules/
+dist/
+.vite/
+*.local
+*.tsbuildinfo
