@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useReducer, useRef, useState } from "react";
 import { streamChat } from "../api/chat";
+import { chatReducer, createInitialChatState } from "../state/chatReducer";
 import type { AgentEvent, ChatMessage } from "../types";
 
 function uid() {
@@ -7,14 +8,21 @@ function uid() {
 }
 
 export function useChat(conversationId: string) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [state, dispatch] = useReducer(
+    chatReducer,
+    conversationId,
+    createInitialChatState,
+  );
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const activeAssistantRef = useRef<string | null>(null);
+  const loading = state.phase === "streaming" || state.phase === "summarizing";
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
-    setLoading(false);
+    if (activeAssistantRef.current) {
+      dispatch({ type: "cancel", assistantId: activeAssistantRef.current });
+    }
   }, []);
 
   const send = useCallback(
@@ -23,15 +31,25 @@ export function useChat(conversationId: string) {
       if (!text || loading) return;
 
       setInput("");
-      setLoading(true);
 
       const userMsg: ChatMessage = { id: uid(), role: "user", content: text };
       const assistantId = uid();
-      setMessages((prev) => [
-        ...prev,
-        userMsg,
-        { id: assistantId, role: "assistant", content: "", toolEvents: [], error: null },
-      ]);
+      const assistantMsg: ChatMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        phase: "streaming",
+        statusText: "thinking",
+        toolCallIds: [],
+        finalResult: null,
+        error: null,
+      };
+      dispatch({
+        type: "start_turn",
+        userMessage: userMsg,
+        assistantMessage: assistantMsg,
+      });
+      activeAssistantRef.current = assistantId;
 
       abortRef.current?.abort();
       abortRef.current = new AbortController();
@@ -39,55 +57,51 @@ export function useChat(conversationId: string) {
       try {
         await streamChat({
           message: text,
-          conversationId,
+          conversationId: state.conversationId,
           signal: abortRef.current.signal,
           onEvent: (event: AgentEvent) => {
-            setMessages((prev) =>
-              prev.map((m) => {
-                if (m.id !== assistantId) return m;
-                const toolEvents = [...(m.toolEvents ?? [])];
-                if (
-                  event.type === "tool_start" ||
-                  event.type === "tool_result" ||
-                  event.type === "status"
-                ) {
-                  toolEvents.push(event);
-                }
-                let content = m.content;
-                let error = m.error ?? null;
-                if (event.type === "text_delta" && event.content) {
-                  content += event.content;
-                } else if (event.type === "text" && event.content) {
-                  content = event.content;
-                } else if (event.type === "error" && event.content) {
-                  error = event.content;
-                }
-                return { ...m, content, toolEvents, error };
-              }),
-            );
+            dispatch({
+              type: "event",
+              assistantId,
+              event,
+              receivedAt: Date.now(),
+            });
           },
         });
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
         const msg = (e as Error).message;
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId
-              ? {
-                  ...m,
-                  error:
-                    m.error ??
-                    `请求未完成：${msg}。请确认后端已在 8000 端口运行。`,
-                }
-              : m,
-          ),
-        );
+        dispatch({
+          type: "request_error",
+          assistantId,
+          message: `请求未完成：${msg}。请确认后端已在 8000 端口运行。`,
+        });
       } finally {
-        setLoading(false);
+        dispatch({ type: "stream_finished", assistantId });
+        if (activeAssistantRef.current === assistantId) {
+          activeAssistantRef.current = null;
+        }
       }
     },
-    [input, loading, conversationId],
+    [input, loading, state.conversationId],
   );
 
-  return { messages, input, setInput, loading, send, cancel };
+  const setActiveResult = useCallback((resultId: string) => {
+    dispatch({ type: "set_active_result", resultId });
+  }, []);
+
+  const activeResult = state.activeResultId
+    ? state.results[state.activeResultId] ?? null
+    : null;
+
+  return {
+    ...state,
+    activeResult,
+    input,
+    setInput,
+    loading,
+    send,
+    cancel,
+    setActiveResult,
+  };
 }

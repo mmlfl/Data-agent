@@ -9,20 +9,28 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import type { SqlResultData } from "../types/sqlResult";
+import type { ColumnDataType, DataFrameComponent } from "../types";
 import { defaultCsvFilename, exportToCsv } from "../utils/exportCsv";
 import { RowDetailModal } from "./RowDetailModal";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 25;
 
-function formatCell(value: unknown): string {
-  if (value === null || value === undefined) return "—";
+function formatCell(value: unknown, type: ColumnDataType): string {
+  if (value === null || value === undefined) return "NULL";
   if (typeof value === "object") return JSON.stringify(value);
+  if (type === "number" && typeof value === "number") {
+    return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(value);
+  }
+  if (type === "boolean") return value ? "是" : "否";
+  if (type === "datetime" && typeof value === "string") {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date.toLocaleString("zh-CN");
+  }
   return String(value);
 }
 
 interface QueryResultTableProps {
-  data: SqlResultData;
+  data: DataFrameComponent;
 }
 
 export function QueryResultTable({ data }: QueryResultTableProps) {
@@ -32,10 +40,28 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
 
   const columns = useMemo<ColumnDef<Record<string, unknown>>[]>(
     () =>
-      data.columns.map((col) => ({
-        accessorKey: col,
-        header: col,
-        cell: (info) => formatCell(info.getValue()),
+      data.columns.map((column) => ({
+        accessorKey: column.name,
+        header: () => (
+          <span className="result-table__column">
+            <span>{column.name}</span>
+            <small>{column.data_type}</small>
+          </span>
+        ),
+        cell: (info) => {
+          const value = info.getValue();
+          const formatted = formatCell(value, column.data_type);
+          return (
+            <span
+              className={`result-table__cell result-table__cell--${column.data_type}${
+                value == null ? " result-table__cell--null" : ""
+              }`}
+              title={formatted}
+            >
+              {formatted}
+            </span>
+          );
+        },
       })),
     [data.columns],
   );
@@ -56,15 +82,15 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
 
   const handleExport = () => {
     const filtered = table.getFilteredRowModel().rows.map((r) => r.original);
-    exportToCsv(data.columns, filtered, defaultCsvFilename());
+    exportToCsv(
+      data.columns.map((column) => column.name),
+      filtered,
+      defaultCsvFilename(),
+    );
   };
 
   return (
     <div className="result-table">
-      {data.sql && (
-        <pre className="result-table__sql">{data.sql}</pre>
-      )}
-
       <div className="result-table__toolbar">
         <input
           type="search"
@@ -75,12 +101,12 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
           aria-label="搜索表格"
         />
         <div className="result-table__meta">
-          共 {data.rowCount} 行
-          {data.truncated && ` · 展示前 ${data.rows.length} 行`}
+          共 {data.row_count} 行
+          {data.truncated && ` · 当前展示前 ${data.displayed_row_count} 行`}
           {globalFilter && ` · 筛选后 ${table.getFilteredRowModel().rows.length} 行`}
         </div>
         <button type="button" className="result-table__export" onClick={handleExport}>
-          导出 CSV
+          导出当前展示
         </button>
       </div>
 
@@ -158,7 +184,7 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
 
       <RowDetailModal
         row={selectedRow}
-        columns={data.columns}
+        columns={data.columns.map((column) => column.name)}
         onClose={() => setSelectedRow(null)}
       />
     </div>

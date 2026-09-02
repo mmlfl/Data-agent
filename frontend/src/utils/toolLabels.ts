@@ -1,7 +1,8 @@
 const TOOL_LABELS: Record<string, string> = {
-  list_tables: "列出数据表",
-  describe_table: "查看表结构",
-  run_sql: "执行查询",
+  list_tables: "定位数据表",
+  describe_table: "核对字段结构",
+  run_sql: "执行只读查询",
+  finalize_result: "生成分析结论",
 };
 
 export function getToolLabel(name: string): string {

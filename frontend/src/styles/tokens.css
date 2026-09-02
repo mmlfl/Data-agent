@@ -1,52 +1,88 @@
-:root {
+:root,
+[data-theme="light"] {
   color-scheme: light;
+  --color-canvas: #f4f7f8;
+  --color-panel: #ffffff;
+  --color-panel-muted: #edf2f4;
+  --color-panel-raised: #ffffff;
+  --color-ink: #17212b;
+  --color-muted: #64717c;
+  --color-faint: #87939d;
+  --color-line: #d8e0e4;
+  --color-line-strong: #bec9cf;
+  --color-teal: #137c7e;
+  --color-teal-strong: #0c6568;
+  --color-teal-soft: #e2f1f1;
+  --color-blue: #315fca;
+  --color-blue-soft: #e8eefc;
+  --color-amber: #d08a2e;
+  --color-amber-soft: #fff1dc;
+  --color-danger: #bd4048;
+  --color-danger-soft: #fdebed;
+  --color-code: #101a22;
+  --color-code-ink: #dce7ec;
+  --color-overlay: rgba(16, 26, 34, 0.46);
+  --chart-grid: #e0e7ea;
+  --shadow-panel: 0 16px 42px rgba(24, 44, 58, 0.08);
+}
 
-  /* Palette — Query Workshop */
-  --color-paper: #f5f6f4;
-  --color-ink: #2c3338;
-  --color-slate: #6b7280;
-  --color-sage: #5b8a72;
-  --color-sage-dark: #4a7560;
-  --color-sage-muted: #5b8a7218;
-  --color-amber: #d4a054;
-  --color-amber-muted: #d4a05420;
-  --color-mist: #eef0ed;
-  --color-line: #dde2dc;
-  --color-white: #ffffff;
-  --color-error: #c0392b;
-  --color-error-muted: #c0392b12;
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-canvas: #0d151c;
+  --color-panel: #131e27;
+  --color-panel-muted: #18252f;
+  --color-panel-raised: #192630;
+  --color-ink: #e4edf1;
+  --color-muted: #9cabb4;
+  --color-faint: #768792;
+  --color-line: #293842;
+  --color-line-strong: #3b4d58;
+  --color-teal: #51a9aa;
+  --color-teal-strong: #78c1c1;
+  --color-teal-soft: #16373b;
+  --color-blue: #7f9eea;
+  --color-blue-soft: #1d2d50;
+  --color-amber: #e1a75a;
+  --color-amber-soft: #3b2c1a;
+  --color-danger: #ef7d83;
+  --color-danger-soft: #3b2026;
+  --color-code: #091017;
+  --color-code-ink: #dce7ec;
+  --color-overlay: rgba(3, 8, 12, 0.72);
+  --chart-grid: #2b3a44;
+  --shadow-panel: 0 18px 52px rgba(0, 0, 0, 0.24);
+}
 
-  /* Typography */
-  --font-display: "Literata", Georgia, serif;
-  --font-body: "Source Sans 3", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+:root {
+  --font-display: "Manrope", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-body: "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Code", ui-monospace, monospace;
 
+  --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;
   --text-sm: 0.8125rem;
   --text-base: 0.9375rem;
   --text-lg: 1.125rem;
   --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
 
-  /* Spacing */
-  --space-xs: 0.25rem;
-  --space-sm: 0.5rem;
-  --space-md: 0.75rem;
-  --space-lg: 1rem;
-  --space-xl: 1.5rem;
-  --space-2xl: 2rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
 
-  /* Radius */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-xs: 4px;
+  --radius-sm: 7px;
+  --radius-md: 11px;
+  --radius-lg: 16px;
 
-  /* Layout */
-  --max-width: 860px;
-  --header-height: auto;
-
-  /* Motion */
-  --transition-fast: 150ms ease;
-  --transition-base: 250ms ease;
+  --topbar-height: 76px;
+  --transition-fast: 140ms ease;
+  --transition-base: 240ms ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
