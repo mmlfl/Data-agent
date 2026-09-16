@@ -1,6 +1,7 @@
 """Concrete agent tools."""
 
 from sql_agent.tools.describe_table import DescribeTableArgs, DescribeTableTool
+from sql_agent.tools.finalize_result import FinalizeResultArgs, FinalizeResultTool
 from sql_agent.tools.list_tables import ListTablesArgs, ListTablesTool
 from sql_agent.tools.run_sql import (
     RunSqlArgs,
@@ -12,6 +13,8 @@ from sql_agent.tools.run_sql import (
 __all__ = [
     "DescribeTableArgs",
     "DescribeTableTool",
+    "FinalizeResultArgs",
+    "FinalizeResultTool",
     "ListTablesArgs",
     "ListTablesTool",
     "RunSqlArgs",

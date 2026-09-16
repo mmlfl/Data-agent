@@ -1,5 +1,6 @@
 # ── Python ──────────────────────────────────────────────
 .venv/
+.venv-rag/
 venv/
 env/
 __pycache__/
@@ -76,3 +77,14 @@ pnpm-debug.log*
 
 # SQLite schema cache (per dialect: metadata_dm.db / metadata_mysql.db)
 **/metadata_*.db
+
+# ── Local docs / learning notes（不提交 GitHub）──────────
+docs/
+
+# RAG / Milvus 本地实验产物
+data/rag_lab/
+*.milvus
+milvus_demo.db
+
+
+tests

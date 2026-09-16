@@ -28,6 +28,12 @@ class DbSettings(BaseSettings):
     db_password: str = Field(default="", validation_alias="DB_PASSWORD")
     db_database: str = Field(default="", validation_alias="DB_DATABASE")
     db_pool_size: int = Field(default=5, validation_alias="DB_POOL_SIZE")
+    db_max_result_rows: int = Field(
+        default=500, gt=0, le=10_000, validation_alias="DB_MAX_RESULT_ROWS"
+    )
+    db_query_timeout_seconds: int = Field(
+        default=30, gt=0, le=600, validation_alias="DB_QUERY_TIMEOUT_SECONDS"
+    )
     schema_cache_path: Optional[str] = Field(
         default=None, validation_alias="SCHEMA_CACHE_PATH"
     )

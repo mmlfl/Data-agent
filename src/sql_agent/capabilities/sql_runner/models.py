@@ -1,6 +1,17 @@
 """SQL runner capability models."""
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field
+
+
+@dataclass(frozen=True, slots=True)
+class SqlExecutionResult:
+    """A bounded result returned by a database runner."""
+
+    columns: list[str]
+    rows: list[tuple]
+    truncated: bool = False
 
 
 class RunSqlToolArgs(BaseModel):

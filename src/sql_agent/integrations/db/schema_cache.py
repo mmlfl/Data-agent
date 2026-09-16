@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -34,10 +35,14 @@ class SchemaCache:
         self.settings = settings or DbSettings()
         self.db_path = Path(db_path) if db_path else self.settings.resolve_cache_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._init_tables()
 
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.db_path, timeout=10)
+
     def _init_tables(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tables (
@@ -67,9 +72,10 @@ class SchemaCache:
             )
 
     def table_count(self) -> int:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("SELECT COUNT(*) FROM tables").fetchone()
-            return int(row[0]) if row else 0
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute("SELECT COUNT(*) FROM tables").fetchone()
+                return int(row[0]) if row else 0
 
     def is_ready(self) -> bool:
         """True when cache file exists and contains synced table metadata."""
@@ -82,102 +88,119 @@ class SchemaCache:
 
     def ensure_ready(self, *, force: bool = False) -> dict:
         """Use existing cache, or run a full sync from the live database first."""
-        dialect = self.settings.db_dialect
-        if force or not self.is_ready():
-            if force and self.is_ready():
-                logger.info("强制刷新 %s 元数据缓存", dialect)
+        with self._lock:
+            dialect = self.settings.db_dialect
+            if force or not self.is_ready():
+                if force and self.is_ready():
+                    logger.info("强制刷新 %s 元数据缓存", dialect)
+                else:
+                    logger.info("未检测到 %s 元数据缓存，开始全量同步", dialect)
+                self.sync()
+                status = "synced"
             else:
-                logger.info("未检测到 %s 元数据缓存，开始全量同步", dialect)
-            self.sync()
-            status = "synced"
-        else:
-            logger.info(
-                "使用已有 %s 元数据缓存：%s（%d 张表）",
-                dialect,
-                self.db_path,
-                self.table_count(),
-            )
-            status = "cached"
+                logger.info(
+                    "使用已有 %s 元数据缓存：%s（%d 张表）",
+                    dialect,
+                    self.db_path,
+                    self.table_count(),
+                )
+                status = "cached"
 
-        return {
-            "status": status,
-            "dialect": dialect,
-            "cache_path": str(self.db_path),
-            "table_count": self.table_count(),
-        }
+            return {
+                "status": status,
+                "dialect": dialect,
+                "cache_path": str(self.db_path),
+                "table_count": self.table_count(),
+            }
 
     def sync(self) -> None:
         """Pull full schema from the live database (dm or mysql) into SQLite."""
-        dialect = self.settings.db_dialect
-        logger.info("开始从 %s 全量同步元数据到 SQLite ...", dialect)
-        start = datetime.now()
-        with self.pool.borrow() as runner:
-            tables, columns = runner.fetch_schema_metadata()
+        with self._lock:
+            dialect = self.settings.db_dialect
+            logger.info("开始从 %s 全量同步元数据到 SQLite ...", dialect)
+            start = datetime.now()
+            with self.pool.borrow() as runner:
+                tables, columns = runner.fetch_schema_metadata()
 
-        with sqlite3.connect(self.db_path) as sqlite:
-            sqlite.execute("DELETE FROM columns")
-            sqlite.execute("DELETE FROM tables")
-            for table_name, owner, comment in tables:
-                sqlite.execute(
-                    "INSERT INTO tables (table_name, schema_name, table_comment) "
-                    "VALUES (?, ?, ?)",
-                    (table_name, owner, comment or ""),
-                )
-            for col in columns:
-                table_name, col_name, data_type, nullable, data_len, col_comment = col
-                sqlite.execute(
-                    "INSERT INTO columns "
-                    "(table_name, column_name, data_type, column_comment,"
-                    " is_nullable, data_length) VALUES (?, ?, ?, ?, ?, ?)",
+            # One SQLite transaction keeps readers on the previous snapshot
+            # until the complete replacement is committed.
+            with self._connect() as sqlite:
+                sqlite.execute("DELETE FROM columns")
+                sqlite.execute("DELETE FROM tables")
+                for table_name, owner, comment in tables:
+                    sqlite.execute(
+                        "INSERT INTO tables (table_name, schema_name, table_comment) "
+                        "VALUES (?, ?, ?)",
+                        (table_name, owner, comment or ""),
+                    )
+                for col in columns:
                     (
                         table_name,
                         col_name,
                         data_type,
-                        str(col_comment or ""),
-                        str(nullable or ""),
-                        int(data_len) if data_len is not None else 0,
-                    ),
-                )
-        elapsed = (datetime.now() - start).total_seconds()
-        logger.info(
-            "同步完成：%s 张表，%s 个字段，耗时 %.1fs",
-            len(tables),
-            len(columns),
-            elapsed,
-        )
+                        nullable,
+                        data_len,
+                        col_comment,
+                    ) = col
+                    sqlite.execute(
+                        "INSERT INTO columns "
+                        "(table_name, column_name, data_type, column_comment,"
+                        " is_nullable, data_length) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            table_name,
+                            col_name,
+                            data_type,
+                            str(col_comment or ""),
+                            str(nullable or ""),
+                            int(data_len) if data_len is not None else 0,
+                        ),
+                    )
+            elapsed = (datetime.now() - start).total_seconds()
+            logger.info(
+                "同步完成：%s 张表，%s 个字段，耗时 %.1fs",
+                len(tables),
+                len(columns),
+                elapsed,
+            )
 
     def search_tables(self, keyword: str) -> List[dict]:
         """SQLite first; if empty, query live DB and upsert hits."""
-        rows = self._search_tables_sqlite(keyword)
-        if rows:
-            return rows
+        with self._lock:
+            rows = self._search_tables_sqlite(keyword)
+            if rows:
+                return rows
 
-        logger.info("SQLite 未命中表搜索 '%s'，回源 %s", keyword, self.settings.db_dialect)
-        with self.pool.borrow() as runner:
-            live = runner.search_tables(keyword)
-        if live:
-            self._upsert_tables(live)
-        return live
+            logger.info(
+                "SQLite 未命中表搜索 '%s'，回源 %s",
+                keyword,
+                self.settings.db_dialect,
+            )
+            with self.pool.borrow() as runner:
+                live = runner.search_tables(keyword)
+            if live:
+                self._upsert_tables(live)
+            return live
 
     def get_table_info(self, table_name: str) -> List[dict]:
         """SQLite first; if empty, describe on live DB and upsert."""
-        rows = self._get_table_info_sqlite(table_name)
-        if rows:
-            return rows
+        with self._lock:
+            rows = self._get_table_info_sqlite(table_name)
+            if rows:
+                return rows
 
-        logger.info(
-            "SQLite 未命中表结构 '%s'，回源 %s",
-            table_name,
-            self.settings.db_dialect,
-        )
-        with self.pool.borrow() as runner:
-            live = runner.describe_table(table_name)
-        if live:
-            self._upsert_table_columns(table_name, live)
-        return live
+            logger.info(
+                "SQLite 未命中表结构 '%s'，回源 %s",
+                table_name,
+                self.settings.db_dialect,
+            )
+            with self.pool.borrow() as runner:
+                live = runner.describe_table(table_name)
+            if live:
+                self._upsert_table_columns(table_name, live)
+            return live
 
     def _search_tables_sqlite(self, keyword: str) -> List[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT table_name, schema_name, table_comment FROM tables "
@@ -187,7 +210,7 @@ class SchemaCache:
             return [dict(r) for r in rows]
 
     def _get_table_info_sqlite(self, table_name: str) -> List[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT column_name, data_type, column_comment,"
@@ -199,7 +222,7 @@ class SchemaCache:
             return [dict(r) for r in rows]
 
     def _upsert_tables(self, tables: List[dict]) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             for t in tables:
                 conn.execute(
                     "INSERT INTO tables (table_name, schema_name, table_comment) "
@@ -216,7 +239,7 @@ class SchemaCache:
                 )
 
     def _upsert_table_columns(self, table_name: str, columns: List[dict]) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "INSERT INTO tables (table_name, schema_name, table_comment) "
                 "VALUES (?, '', '') "

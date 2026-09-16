@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from sql_agent.capabilities.agent_memory.base import AgentMemory
+from sql_agent.components import UiComponent
 from sql_agent.core.user.models import User
 
 
@@ -35,7 +36,15 @@ class ToolResult(BaseModel):
 
     success: bool = Field(description="Whether execution succeeded")
     result_for_llm: str = Field(description="String content to send back to the LLM")
-    error: Optional[str] = Field(default=None, description="Error message if failed")
+    ui_component: Optional[UiComponent] = Field(
+        default=None, description="Structured rich representation for capable clients"
+    )
+    error: Optional[str] = Field(
+        default=None, description="Internal diagnostic error; never expose directly"
+    )
+    user_error: Optional[str] = Field(
+        default=None, description="Sanitized error safe to show to end users"
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

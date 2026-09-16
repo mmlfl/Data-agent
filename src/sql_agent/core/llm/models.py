@@ -1,6 +1,6 @@
 """LLM domain models."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,9 @@ class LlmRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=None, gt=0)
     system_prompt: Optional[str] = Field(
         default=None, description="System prompt for the LLM"
+    )
+    response_format: Optional[Literal["text", "json_object"]] = Field(
+        default=None, description="Requested structured response mode"
     )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

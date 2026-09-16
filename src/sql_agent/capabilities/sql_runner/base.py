@@ -9,6 +9,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, List, Tuple
 
+from sql_agent.capabilities.sql_runner.models import SqlExecutionResult
+
 
 class SqlRunner(ABC):
     """Interface for SQL execution with different database implementations."""
@@ -40,8 +42,10 @@ class SqlRunner(ABC):
         """Enter a read-only transaction."""
 
     @abstractmethod
-    def execute_readonly(self, sql: str) -> Tuple[List[str], List[tuple]]:
-        """Execute read-only SQL; return (columns, rows)."""
+    def execute_readonly(
+        self, sql: str, *, max_rows: int
+    ) -> SqlExecutionResult:
+        """Execute read-only SQL with a hard row cap."""
 
     @abstractmethod
     def search_tables(self, keyword: str) -> List[dict]:

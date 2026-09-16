@@ -7,7 +7,7 @@ import os
 import shutil
 from typing import Any, List, Optional, Tuple
 
-from sql_agent.capabilities.sql_runner import SqlRunner
+from sql_agent.capabilities.sql_runner import SqlExecutionResult, SqlRunner
 from sql_agent.integrations.db.db_settings import DbSettings
 from sql_agent.integrations.db.sql_validate import validate_sql
 
@@ -124,10 +124,14 @@ class DamengRunner(SqlRunner):
             self.close()
             self.connect()
 
-    def execute_readonly(self, sql: str) -> Tuple[List[str], List[tuple]]:
+    def execute_readonly(
+        self, sql: str, *, max_rows: int
+    ) -> SqlExecutionResult:
         """对齐 sql-agent tools._execute_sql：校验 → 只读事务 → 执行。"""
         if not validate_sql(sql):
             raise PermissionError("不安全的sql语句，拒绝执行")
+        if max_rows <= 0:
+            raise ValueError("max_rows must be positive")
 
         self.ensure_connection()
         self.reset_transaction()
@@ -137,8 +141,14 @@ class DamengRunner(SqlRunner):
             cleaned = sql.strip().rstrip(";").strip()
             cursor.execute(cleaned)
             columns = [col[0] for col in (cursor.description or [])]
-            rows = cursor.fetchall() if cursor.description else []
-            return columns, list(rows)
+            fetched = (
+                list(cursor.fetchmany(max_rows + 1)) if cursor.description else []
+            )
+            return SqlExecutionResult(
+                columns=columns,
+                rows=fetched[:max_rows],
+                truncated=len(fetched) > max_rows,
+            )
         finally:
             cursor.close()
             self.reset_transaction()

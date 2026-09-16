@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, TypeVar, Union
 
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from sql_agent.core.audit import AuditLogger
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class _LocalToolWrapper(Tool[T]):
@@ -57,16 +59,29 @@ class ToolRegistry:
         audit_config: Optional["AuditConfig"] = None,
     ) -> None:
         self._tools: Dict[str, Tool[Any]] = {}
+        self._llm_exposed: set[str] = set()
         self.audit_logger = audit_logger
         self.audit_config = audit_config
 
     def register(
-        self, tool: Tool[Any], access_groups: Optional[List[str]] = None
+        self,
+        tool: Tool[Any],
+        access_groups: Optional[List[str]] = None,
+        *,
+        expose_to_llm: bool = True,
     ) -> None:
         """Register a tool. Empty access_groups means accessible to all."""
-        self.register_local_tool(tool, access_groups or [])
+        self.register_local_tool(
+            tool, access_groups or [], expose_to_llm=expose_to_llm
+        )
 
-    def register_local_tool(self, tool: Tool[Any], access_groups: List[str]) -> None:
+    def register_local_tool(
+        self,
+        tool: Tool[Any],
+        access_groups: List[str],
+        *,
+        expose_to_llm: bool = True,
+    ) -> None:
         if tool.name in self._tools:
             raise ValueError(f"Tool '{tool.name}' already registered")
 
@@ -74,16 +89,25 @@ class ToolRegistry:
             self._tools[tool.name] = _LocalToolWrapper(tool, access_groups)
         else:
             self._tools[tool.name] = tool
+        if expose_to_llm:
+            self._llm_exposed.add(tool.name)
 
     async def get_tool(self, name: str) -> Optional[Tool[Any]]:
         return self._tools.get(name)
 
-    async def list_tools(self) -> List[str]:
-        return list(self._tools.keys())
+    async def list_tools(self, *, include_internal: bool = False) -> List[str]:
+        if include_internal:
+            return list(self._tools.keys())
+        return [name for name in self._tools if name in self._llm_exposed]
+
+    async def is_llm_exposed(self, name: str) -> bool:
+        return name in self._llm_exposed
 
     async def get_schemas(self, user: Optional[User] = None) -> List[ToolSchema]:
         schemas: List[ToolSchema] = []
         for tool in self._tools.values():
+            if tool.name not in self._llm_exposed:
+                continue
             if user is None or await self._validate_tool_permissions(tool, user):
                 schemas.append(tool.get_schema())
         return schemas
@@ -104,11 +128,33 @@ class ToolRegistry:
         """Hook for per-user argument transformation (RLS etc.). Default: NoOp."""
         return args
 
-    async def execute(self, tool_call: ToolCall, context: ToolContext) -> ToolResult:
+    async def execute(
+        self,
+        tool_call: ToolCall,
+        context: ToolContext,
+        *,
+        allow_internal: bool = False,
+    ) -> ToolResult:
+        if tool_call.name not in self._llm_exposed and not allow_internal:
+            msg = f"Tool '{tool_call.name}' is not available"
+            return ToolResult(
+                success=False,
+                result_for_llm=msg,
+                error=msg,
+                user_error="请求了不可用的工具。",
+                metadata={"error_code": "tool_not_available"},
+            )
+
         tool = await self.get_tool(tool_call.name)
         if not tool:
             msg = f"Tool '{tool_call.name}' not found"
-            return ToolResult(success=False, result_for_llm=msg, error=msg)
+            return ToolResult(
+                success=False,
+                result_for_llm=msg,
+                error=msg,
+                user_error="请求的分析能力当前不可用。",
+                metadata={"error_code": "tool_not_found"},
+            )
 
         granted = await self._validate_tool_permissions(tool, context.user)
         if (
@@ -128,26 +174,51 @@ class ToolRegistry:
 
         if not granted:
             msg = f"Insufficient group access for tool '{tool_call.name}'"
-            return ToolResult(success=False, result_for_llm=msg, error=msg)
+            return ToolResult(
+                success=False,
+                result_for_llm=msg,
+                error=msg,
+                user_error="当前账号无权使用该分析能力。",
+                metadata={"error_code": "tool_access_denied"},
+            )
 
         try:
             args_model = tool.get_args_schema()
             validated_args = args_model.model_validate(tool_call.arguments)
         except Exception as e:
             msg = f"Invalid arguments: {e}"
-            return ToolResult(success=False, result_for_llm=msg, error=msg)
+            return ToolResult(
+                success=False,
+                result_for_llm=msg,
+                error=msg,
+                user_error="工具参数无效，正在尝试调整查询。",
+                metadata={"error_code": "invalid_tool_arguments"},
+            )
 
-        transform_result = await self.transform_args(
-            tool=tool,
-            args=validated_args,
-            user=context.user,
-            context=context,
-        )
+        try:
+            transform_result = await self.transform_args(
+                tool=tool,
+                args=validated_args,
+                user=context.user,
+                context=context,
+            )
+        except Exception as e:
+            logger.exception("Tool argument transformation failed: %s", tool_call.name)
+            msg = f"Argument transformation failed: {e}"
+            return ToolResult(
+                success=False,
+                result_for_llm=msg,
+                error=msg,
+                user_error="查询参数处理失败，请稍后重试。",
+                metadata={"error_code": "tool_argument_transform_failed"},
+            )
         if isinstance(transform_result, ToolRejection):
             return ToolResult(
                 success=False,
                 result_for_llm=transform_result.reason,
                 error=transform_result.reason,
+                user_error="该查询不符合当前数据访问规则。",
+                metadata={"error_code": "tool_argument_rejected"},
             )
 
         if (
@@ -180,4 +251,11 @@ class ToolRegistry:
             return result
         except Exception as e:
             msg = f"Execution failed: {e}"
-            return ToolResult(success=False, result_for_llm=msg, error=msg)
+            logger.exception("Tool execution failed: %s", tool_call.name)
+            return ToolResult(
+                success=False,
+                result_for_llm=msg,
+                error=msg,
+                user_error="工具执行失败，请稍后重试。",
+                metadata={"error_code": "tool_execution_failed"},
+            )

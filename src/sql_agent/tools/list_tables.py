@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Type
 
 from pydantic import BaseModel, Field
 
+from sql_agent.components import TableInfo, TableListComponent
 from sql_agent.core.tool.base import Tool
 from sql_agent.core.tool.models import ToolContext, ToolResult
 from sql_agent.integrations.db.schema_cache import SchemaCache
@@ -37,14 +39,27 @@ class ListTablesTool(Tool[ListTablesArgs]):
         return ListTablesArgs
 
     async def execute(self, context: ToolContext, args: ListTablesArgs) -> ToolResult:
-        rows = self._cache.search_tables(args.keyword)
+        rows = await asyncio.to_thread(self._cache.search_tables, args.keyword)
+        tables = [
+            TableInfo(
+                table_name=str(row.get("table_name", "")),
+                schema_name=row.get("schema_name") or None,
+                table_comment=row.get("table_comment") or None,
+            )
+            for row in rows
+            if row.get("table_name")
+        ]
+        component = TableListComponent(keyword=args.keyword, tables=tables)
         if not rows:
             return ToolResult(
                 success=True,
                 result_for_llm=f"未找到与 '{args.keyword}' 相关的表",
+                ui_component=component,
+                metadata={"count": 0, "keyword": args.keyword},
             )
         return ToolResult(
             success=True,
             result_for_llm=json.dumps(rows, ensure_ascii=False),
-            metadata={"count": len(rows)},
+            ui_component=component,
+            metadata={"count": len(tables), "keyword": args.keyword},
         )

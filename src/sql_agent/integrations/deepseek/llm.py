@@ -25,7 +25,7 @@ class DeepSeekLlmService(LlmService):
         **extra_client_kwargs: Any,
     ) -> None:
         try:
-            from openai import OpenAI
+            from openai import AsyncOpenAI
         except ImportError as e:
             raise ImportError(
                 "openai package is required. Install with: pip install openai"
@@ -42,15 +42,21 @@ class DeepSeekLlmService(LlmService):
 
         client_kwargs: Dict[str, Any] = {**extra_client_kwargs}
         client_kwargs["api_key"] = api_key
+        client_kwargs.setdefault(
+            "timeout", float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+        )
+        client_kwargs.setdefault(
+            "max_retries", int(os.getenv("LLM_MAX_RETRIES", "2"))
+        )
         if base_url:
             client_kwargs["base_url"] = base_url
 
-        self._client = OpenAI(**client_kwargs)
+        self._client = AsyncOpenAI(**client_kwargs)
 
     async def send_request(self, request: LlmRequest) -> LlmResponse:
         """Non-streaming Chat Completions request (includes tool schemas)."""
         payload = self._build_payload(request)
-        resp = self._client.chat.completions.create(**payload, stream=False)
+        resp = await self._client.chat.completions.create(**payload, stream=False)
 
         if not resp.choices:
             return LlmResponse(content=None, tool_calls=None, finish_reason=None)
@@ -81,12 +87,12 @@ class DeepSeekLlmService(LlmService):
     ) -> AsyncGenerator[LlmStreamChunk, None]:
         """Streaming Chat Completions; text deltas + final tool_calls chunk."""
         payload = self._build_payload(request)
-        stream = self._client.chat.completions.create(**payload, stream=True)
+        stream = await self._client.chat.completions.create(**payload, stream=True)
 
         tc_builders: Dict[int, Dict[str, Optional[str]]] = {}
         last_finish: Optional[str] = None
 
-        for event in stream:
+        async for event in stream:
             if not getattr(event, "choices", None):
                 continue
 
@@ -186,6 +192,8 @@ class DeepSeekLlmService(LlmService):
         }
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        if request.response_format == "json_object":
+            payload["response_format"] = {"type": "json_object"}
 
         if request.tools:
             payload["tools"] = [
