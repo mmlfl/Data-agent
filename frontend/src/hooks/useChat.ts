@@ -60,6 +60,9 @@ export function useChat(conversationId: string) {
           conversationId: state.conversationId,
           signal: abortRef.current.signal,
           onEvent: (event: AgentEvent) => {
+            if (event.metadata?.input_rejected === true && activeAssistantRef.current === assistantId) {
+              setInput((current) => current || text);
+            }
             dispatch({
               type: "event",
               assistantId,

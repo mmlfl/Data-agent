@@ -70,6 +70,7 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
                 pool,
                 max_result_rows=settings.db_max_result_rows,
                 max_frontend_rows=settings.db_max_result_rows,
+                dialect=settings.db_dialect,
             ),
             access_groups=["user"],
         )
@@ -83,7 +84,7 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
     max_result_rows = (
         settings.db_max_result_rows
         if settings
-        else int(os.getenv("DB_MAX_RESULT_ROWS", "500"))
+        else int(os.getenv("DB_MAX_RESULT_ROWS", "100"))
     )
     agent = Agent(
         llm_service=llm,

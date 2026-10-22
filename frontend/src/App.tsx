@@ -27,6 +27,9 @@ export default function App() {
     resultOrder,
     activeResultId,
     phase,
+    contextTokens,
+    contextWindowTokens,
+    contextNotice,
     input,
     setInput,
     loading,
@@ -96,6 +99,9 @@ export default function App() {
           input={input}
           loading={loading}
           disabled={Boolean(healthError)}
+          contextTokens={contextTokens}
+          contextWindowTokens={contextWindowTokens}
+          contextNotice={contextNotice}
           onInputChange={setInput}
           onSend={(prompt) => void send(prompt)}
           onCancel={cancel}

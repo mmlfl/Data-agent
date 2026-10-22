@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Tuple
 
 from sql_agent.capabilities.sql_runner import SqlExecutionResult, SqlRunner
 from sql_agent.integrations.db.db_settings import DbSettings
-from sql_agent.integrations.db.sql_validate import validate_sql
+from sql_agent.integrations.db.sql_validate import MAX_QUERY_ROWS, prepare_readonly_sql
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +53,10 @@ class MySQLRunner(SqlRunner):
                     read_timeout=self.settings.db_query_timeout_seconds,
                     write_timeout=self.settings.db_query_timeout_seconds,
                 )
-                try:
-                    with self.connection.cursor() as cursor:
-                        cursor.execute(
-                            "SET SESSION MAX_EXECUTION_TIME = %s",
-                            (self.settings.db_query_timeout_seconds * 1000,),
-                        )
-                except Exception:
-                    logger.warning(
-                        "当前 MySQL 不支持 MAX_EXECUTION_TIME，会继续使用网络超时保护"
+                with self.connection.cursor() as cursor:
+                    cursor.execute(
+                        "SET SESSION MAX_EXECUTION_TIME = %s",
+                        (self.settings.db_query_timeout_seconds * 1000,),
                     )
                 logger.info(
                     "MySQL 连接成功: %s@%s:%s/%s",
@@ -73,7 +68,7 @@ class MySQLRunner(SqlRunner):
                 return self.connection
             except Exception as e:
                 last_error = e
-                self.connection = None
+                self.close()
                 if attempt == 0:
                     continue
                 raise ConnectionError(f"MySQL 连接失败: {e}") from e
@@ -118,10 +113,10 @@ class MySQLRunner(SqlRunner):
     def execute_readonly(
         self, sql: str, *, max_rows: int
     ) -> SqlExecutionResult:
-        if not validate_sql(sql):
-            raise PermissionError("不安全的sql语句，拒绝执行")
         if max_rows <= 0:
             raise ValueError("max_rows must be positive")
+        max_rows = min(max_rows, MAX_QUERY_ROWS)
+        prepared_sql = prepare_readonly_sql(sql, dialect="mysql", max_rows=max_rows)
 
         self.ensure_connection()
         self.reset_transaction()
@@ -129,16 +124,17 @@ class MySQLRunner(SqlRunner):
         cursor = self.connection.cursor(SSCursor)
         try:
             self.begin_readonly(cursor)
-            cleaned = sql.strip().rstrip(";").strip()
-            cursor.execute(cleaned)
+            cursor.execute(prepared_sql)
             columns = [col[0] for col in (cursor.description or [])]
             fetched = (
-                list(cursor.fetchmany(max_rows + 1)) if cursor.description else []
+                list(cursor.fetchmany(max_rows)) if cursor.description else []
             )
             return SqlExecutionResult(
                 columns=columns,
                 rows=fetched[:max_rows],
-                truncated=len(fetched) > max_rows,
+                # At the SQL cap we cannot know whether there were more rows.
+                truncated=len(fetched) >= max_rows,
+                executed_sql=prepared_sql,
             )
         finally:
             cursor.close()

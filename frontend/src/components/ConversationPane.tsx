@@ -12,6 +12,9 @@ interface ConversationPaneProps {
   input: string;
   loading: boolean;
   disabled: boolean;
+  contextTokens: number;
+  contextWindowTokens: number;
+  contextNotice: string | null;
   onInputChange: (value: string) => void;
   onSend: (prompt?: string) => void;
   onCancel: () => void;
@@ -24,6 +27,9 @@ export function ConversationPane({
   input,
   loading,
   disabled,
+  contextTokens,
+  contextWindowTokens,
+  contextNotice,
   onInputChange,
   onSend,
   onCancel,
@@ -94,6 +100,11 @@ export function ConversationPane({
         loading={loading}
         disabled={disabled}
         disabledReason={disabled ? "后端服务不可用，请检查后重试" : null}
+        contextUsage={{
+          tokens: contextTokens,
+          windowTokens: contextWindowTokens,
+        }}
+        contextNotice={contextNotice}
         onInputChange={onInputChange}
         onSend={() => onSend()}
         onCancel={onCancel}

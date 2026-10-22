@@ -851,6 +851,7 @@ button {
 
 .composer__hint {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   padding: 2px 12px 8px;
@@ -858,9 +859,92 @@ button {
   font-size: var(--text-2xs);
 }
 
-.composer__hint span:first-child {
+.composer__hint-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.composer__hint > span:first-child {
   color: var(--color-teal);
   font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.composer__notice {
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, #d97706 35%, var(--color-line));
+  background: color-mix(in srgb, #d97706 12%, var(--color-panel-muted));
+  color: var(--color-ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+.context-meter__ring {
+  display: block;
+  flex-shrink: 0;
+}
+
+.context-meter__track {
+  stroke: var(--color-line-strong);
+  opacity: 0.9;
+}
+
+.context-meter__progress {
+  stroke: var(--color-teal);
+  transition: stroke-dashoffset 240ms ease;
+}
+
+.context-meter--idle .context-meter__progress {
+  stroke: var(--color-line-strong);
+}
+
+.context-meter--ok .context-meter__progress {
+  stroke: var(--color-teal);
+}
+
+.context-meter--warn .context-meter__progress {
+  stroke: #d97706;
+}
+
+.context-meter--critical .context-meter__progress {
+  stroke: #dc2626;
+}
+
+.context-meter__label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.context-meter__label strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.context-meter__sep {
+  opacity: 0.7;
+}
+
+.context-meter__pct {
+  margin-left: 4px;
+  opacity: 0.75;
 }
 
 .composer__btn {

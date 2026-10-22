@@ -9,6 +9,14 @@ from typing import Any, AsyncGenerator, List, Optional
 
 from sql_agent.core.agent.config import AgentConfig
 from sql_agent.core.audit import AuditLogger
+from sql_agent.core.context.tokens import (
+    estimate_request_tokens,
+    estimate_message_tokens,
+    estimate_text_tokens,
+    is_context_overflow,
+    truncate_tool_text,
+    TRUNCATION_NOTICE,
+)
 from sql_agent.core.enhancer import LlmContextEnhancer, NoOpLlmContextEnhancer
 from sql_agent.core.enricher import ToolContextEnricher
 from sql_agent.core.errors import AgentError
@@ -188,8 +196,9 @@ class Agent:
             yield AgentEvent(type="done", metadata={"conversation_id": conversation.id})
             return
 
+        # Stores may return live objects. Work on a copy until input is accepted.
+        conversation = conversation.model_copy(deep=True)
         conversation.add_message(Message(role="user", content=working_message))
-        await self.conversation_store.update_conversation(conversation)
 
         if self.config.include_thinking_indicators:
             yield AgentEvent(type="status", content="thinking")
@@ -207,6 +216,16 @@ class Agent:
                 system_prompt, working_message, user
             )
 
+        context_window = self.config.context_window_tokens
+        context_refreshed = False
+        context_refresh_count = 0
+        provider_retries = 0
+        force_refresh = False
+        safety_tokens = int(context_window * self.config.context_safety_ratio)
+        input_budget = context_window - safety_tokens - (
+            self.config.max_tokens or self.config.context_output_reserve_tokens
+        )
+
         tool_context = ToolContext(
             user=user,
             conversation_id=conversation.id,
@@ -215,34 +234,146 @@ class Agent:
         )
         for enricher in self.context_enrichers:
             tool_context = await enricher.enrich_context(tool_context)
-
-        request = await self._build_llm_request(
-            conversation, tool_schemas, user, system_prompt
-        )
+        tool_context.metadata["context_window_tokens"] = context_window
+        tool_context.metadata["context_safety_tokens"] = safety_tokens
 
         tool_iterations = 0
         last_sql_result: Optional[tuple[str, DataFrameComponent]] = None
         finalize_draft: Optional[str] = None
+        context_overflow_stopped = False
+        request_message_count = len(conversation.messages)
+        input_accepted = False
+        truncated_tool_ids: set[str] = set()
         while tool_iterations < self.config.max_tool_iterations:
+            request = await self._build_llm_request(
+                conversation, tool_schemas, user, system_prompt
+            )
+            request = await self._apply_middlewares_before(request)
+            context_tokens = estimate_request_tokens(request)
+            budget = min(input_budget, context_window - safety_tokens - (request.max_tokens or 0))
+            if not input_accepted:
+                if context_tokens > budget:
+                    # Validate the irreducible new request before touching old history.
+                    minimal = conversation.model_copy(deep=True)
+                    minimal.messages = [conversation.messages[-1]]
+                    minimal_request = await self._build_llm_request(minimal, tool_schemas, user, system_prompt)
+                    minimal_request = await self._apply_middlewares_before(minimal_request)
+                    minimum_tokens = estimate_request_tokens(minimal_request)
+                    minimum_budget = min(input_budget, context_window - safety_tokens - (minimal_request.max_tokens or 0))
+                    if minimum_tokens > minimum_budget:
+                        yield AgentEvent(type="error", content=(
+                            f"本次输入连同系统提示和工具定义约 {minimum_tokens:,} tokens，"
+                            f"可用输入预算为 {minimum_budget:,} tokens（总窗口 {context_window:,}）。"
+                            "请缩短问题或拆成可独立处理的任务；原会话未改变，输入未截断。"
+                        ), metadata={"error_code": "context_input_too_large", "input_rejected": True,
+                                     "rejected_context_tokens": minimum_tokens,
+                                     "context_input_budget": minimum_budget,
+                                     "context_window_tokens": context_window})
+                        yield AgentEvent(type="done", metadata={"conversation_id": conversation.id})
+                        return
+                input_accepted = True
+                if self.config.auto_save_conversations:
+                    await self.conversation_store.update_conversation(conversation.model_copy(deep=True))
+
+            refreshed = False
+            if force_refresh or context_tokens > budget:
+                latest_user_index = max(
+                    i for i, msg in enumerate(conversation.messages) if msg.role == "user"
+                )
+                current = conversation.messages[latest_user_index:]
+                latest_batch = next((
+                    i for i in range(len(current) - 1, 0, -1)
+                    if current[i].role == "assistant" and current[i].tool_calls
+                ), None)
+                candidate = conversation.model_copy(deep=True)
+                candidate.messages = [current[0].model_copy(deep=True)]
+                if latest_batch is not None:
+                    candidate.messages.extend(msg.model_copy(deep=True) for msg in current[latest_batch:])
+                # Each pass shrinks one result to a fixed notice at worst.
+                # Never edit call arguments or lose call/result pairs.
+                candidates = [m for m in candidate.messages if m.role == "tool"]
+                for _ in range(len(candidates) + 1):
+                    request = await self._build_llm_request(candidate, tool_schemas, user, system_prompt)
+                    request = await self._apply_middlewares_before(request)
+                    context_tokens = estimate_request_tokens(request)
+                    budget = min(input_budget, context_window - safety_tokens - (request.max_tokens or 0))
+                    if context_tokens <= budget or not candidates:
+                        break
+                    largest = max(candidates, key=lambda m: estimate_text_tokens(m.content))
+                    candidates.remove(largest)
+                    target = max(estimate_text_tokens(TRUNCATION_NOTICE),
+                                 estimate_text_tokens(largest.content) - (context_tokens - budget) - 16)
+                    clipped = truncate_tool_text(largest.content, target)
+                    if clipped != largest.content:
+                        largest.content = clipped
+                        truncated_tool_ids.add(largest.tool_call_id or "unknown")
+                force_refresh = False
+                if context_tokens <= budget:
+                    conversation = candidate
+                    context_refreshed = refreshed = True
+                    context_refresh_count += 1
+                    if self.config.auto_save_conversations:
+                        await self.conversation_store.update_conversation(conversation.model_copy(deep=True))
+
+            usage_metadata = {
+                "context_tokens": context_tokens,
+                "context_window_tokens": context_window,
+                "context_input_budget": budget,
+                "context_safety_tokens": safety_tokens,
+                "context_truncated_tool_count": len(truncated_tool_ids),
+                "context_tokens_estimated": True,
+                "context_refreshed": context_refreshed,
+                "context_refresh_count": context_refresh_count,
+            }
+            if refreshed:
+                yield AgentEvent(type="status", content="context_refreshed", metadata={
+                    **usage_metadata,
+                    "message": "模型上下文已刷新（不做摘要压缩）；保留当前问题和最近工具结果，继续执行。聊天记录仍可查看。",
+                })
+            yield AgentEvent(type="status", content="context_usage", metadata=usage_metadata)
+            if context_tokens > budget:
+                context_overflow_stopped = True
+                yield AgentEvent(type="error", content=(
+                    "保留当前任务所需的工具调用参数、系统提示或工具定义仍超过可用上下文。"
+                    "无法安全自动续跑，请缩小任务范围或减少工具/提示内容后重试。"
+                ), metadata={"error_code": "context_input_too_large", **usage_metadata})
+                break
+            # Explicitly bound generation to the reserved output budget.
+            if request.max_tokens is None:
+                request.max_tokens = self.config.max_tokens or self.config.context_output_reserve_tokens
+            request_message_count = len(conversation.messages)
             streamed_text = False
             buffer_response_text = (
                 self.config.auto_finalize_results and last_sql_result is not None
             )
-            request = await self._apply_middlewares_before(request)
 
             try:
                 if self.config.stream_responses:
                     content_parts: List[str] = []
+                    streamed_chars = 0
+                    reported_chars = 0
+                    pending_usage_text: List[str] = []
+                    generated_tokens = 0
                     tool_calls = None
                     finish_reason = None
                     async for chunk in self.llm_service.stream_request(request):
                         if chunk.content:
                             content_parts.append(chunk.content)
+                            streamed_chars += len(chunk.content)
+                            pending_usage_text.append(chunk.content)
                             streamed_text = True
                             if not buffer_response_text:
                                 yield AgentEvent(
                                     type="text_delta", content=chunk.content
                                 )
+                            if streamed_chars - reported_chars >= 512:
+                                reported_chars = streamed_chars
+                                generated_tokens += estimate_text_tokens("".join(pending_usage_text))
+                                pending_usage_text.clear()
+                                yield AgentEvent(type="status", content="context_usage", metadata={
+                                    **usage_metadata,
+                                    "context_tokens": context_tokens + generated_tokens,
+                                })
                         if chunk.tool_calls:
                             tool_calls = chunk.tool_calls
                         if chunk.finish_reason:
@@ -255,6 +386,17 @@ class Agent:
                 else:
                     response = await self.llm_service.send_request(request)
             except Exception as e:
+                if is_context_overflow(e) and not streamed_text and provider_retries < 2:
+                    provider_retries += 1
+                    # The provider tokenizer/limit can differ from our estimate.
+                    input_budget = min(input_budget, int(context_tokens * 0.7))
+                    force_refresh = True
+                    continue
+                if is_context_overflow(e):
+                    context_overflow_stopped = True
+                    yield AgentEvent(type="error", content="模型服务仍拒绝当前上下文，请缩短问题或检查模型窗口配置。",
+                                     metadata={"error_code": "provider_context_overflow"})
+                    break
                 if self.error_recovery_strategy:
                     action = await self.error_recovery_strategy.handle_llm_error(
                         e, request
@@ -322,10 +464,19 @@ class Agent:
                             # is no longer a trustworthy final answer.
                             last_sql_result = None
 
+                    preview = truncate_tool_text(result.result_for_llm, max(
+                        estimate_text_tokens(TRUNCATION_NOTICE), input_budget // 2
+                    ))
+                    if preview != result.result_for_llm:
+                        truncated_tool_ids.add(tool_call.id)
+                        yield AgentEvent(type="status", content="context_tool_truncated", metadata={
+                            "message": "工具返回文本过大，已限制发给模型的内容并标记不完整；查询结果面板保留。",
+                            "tool_call_id": tool_call.id,
+                        })
                     yield AgentEvent(
                         type="tool_result",
                         content=(
-                            result.result_for_llm
+                            preview
                             if result.success
                             else result.user_error or "工具执行失败。"
                         ),
@@ -341,14 +492,11 @@ class Agent:
                     conversation.add_message(
                         Message(
                             role="tool",
-                            content=result.result_for_llm,
+                            content=preview,
                             tool_call_id=tool_call.id,
                         )
                     )
 
-                request = await self._build_llm_request(
-                    conversation, tool_schemas, user, system_prompt
-                )
             else:
                 if (
                     self.config.auto_finalize_results
@@ -377,6 +525,7 @@ class Agent:
         if (
             self.config.auto_finalize_results
             and last_sql_result is not None
+            and not context_overflow_stopped
         ):
             source_tool_call_id, dataframe = last_sql_result
             final_source_tool_call_id = source_tool_call_id
@@ -477,6 +626,12 @@ class Agent:
         for hook in self.lifecycle_hooks:
             await hook.after_message(conversation)
 
+        # Do not rerun request middleware merely to update the UI counter.
+        if not context_overflow_stopped:
+            context_tokens = estimate_request_tokens(request) + sum(
+                estimate_message_tokens(msg)
+                for msg in conversation.messages[request_message_count:]
+            )
         yield AgentEvent(
             type="done",
             metadata={
@@ -484,6 +639,12 @@ class Agent:
                 "tool_iterations": tool_iterations,
                 "finalized": finalized,
                 "source_tool_call_id": final_source_tool_call_id,
+                "context_tokens": context_tokens,
+                "context_window_tokens": context_window,
+                "context_refreshed": context_refreshed,
+                "context_overflow_stopped": context_overflow_stopped,
+                "context_refresh_count": context_refresh_count,
+                "context_tokens_estimated": True,
             },
         )
 

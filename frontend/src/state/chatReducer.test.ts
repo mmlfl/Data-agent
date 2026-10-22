@@ -238,4 +238,52 @@ describe("chatReducer", () => {
     expect(state.activeResultId).toBe("sql-new");
     expect(state.activeAssistantId).toBe("a2");
   });
+
+  it("tracks context usage and preserves UI history on refresh", () => {
+    let state = startedState();
+    state = {
+      ...state,
+      messages: [
+        { id: "old-u", role: "user", content: "更早的问题" },
+        { id: "old-a", role: "assistant", content: "更早的回答", phase: "complete" },
+        ...state.messages,
+      ],
+    };
+
+    state = chatReducer(state, {
+      type: "event",
+      assistantId: "a1",
+      receivedAt: 10,
+      event: evt({
+        type: "status",
+        content: "context_refreshed",
+        metadata: {
+          context_tokens: 1200,
+          context_window_tokens: 256000,
+          message: "上下文已刷新",
+        },
+      }),
+    });
+
+    expect(state.contextTokens).toBe(1200);
+    expect(state.contextWindowTokens).toBe(256000);
+    expect(state.contextNotice).toBe("上下文已刷新");
+    expect(state.messages.map((m) => m.id)).toEqual(["old-u", "old-a", "u1", "a1"]);
+
+    state = chatReducer(state, {
+      type: "event",
+      assistantId: "a1",
+      receivedAt: 11,
+      event: evt({
+        type: "done",
+        metadata: {
+          conversation_id: "local",
+          context_tokens: 1500,
+          context_window_tokens: 256000,
+          context_refreshed: true,
+        },
+      }),
+    });
+    expect(state.contextTokens).toBe(1500);
+  });
 });

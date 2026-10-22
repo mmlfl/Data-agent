@@ -15,7 +15,11 @@ from sql_agent.components import DataColumn, DataFrameComponent
 from sql_agent.core.tool.base import Tool
 from sql_agent.core.tool.models import ToolContext, ToolResult
 from sql_agent.integrations.db.sql_runner_pool import SqlRunnerPool
-from sql_agent.integrations.db.sql_validate import validate_sql
+from sql_agent.integrations.db.sql_validate import (
+    MAX_QUERY_ROWS,
+    SqlValidationError,
+    prepare_readonly_sql,
+)
 
 MAX_LLM_ROWS = 20
 MAX_FRONTEND_ROWS = 500
@@ -171,16 +175,19 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
         self,
         pool: SqlRunnerPool,
         *,
-        max_result_rows: int = 500,
+        max_result_rows: int = MAX_QUERY_ROWS,
         max_llm_rows: int = MAX_LLM_ROWS,
         max_frontend_rows: int | None = None,
+        dialect: str | None = None,
     ) -> None:
         self._pool = pool
-        self._max_result_rows = max(1, max_result_rows)
+        self._max_result_rows = min(MAX_QUERY_ROWS, max(1, max_result_rows))
+        self._dialect = dialect
         self._max_llm_rows = max(1, max_llm_rows)
         # UI 与服务端硬上限对齐，避免「库取了 2000 行但画布只剩 500」
-        self._max_frontend_rows = max(
-            1, max_frontend_rows if max_frontend_rows is not None else max_result_rows
+        self._max_frontend_rows = min(
+            self._max_result_rows,
+            max(1, max_frontend_rows if max_frontend_rows is not None else self._max_result_rows),
         )
 
     @property
@@ -190,11 +197,11 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
     @property
     def description(self) -> str:
         return (
-            "执行只读 SELECT。结果双通道：前端画布拿到完整结果集（服务端安全上限内），"
-            "你只会看到少量样本用于推理——因此正式查询不要用 ROWNUM/LIMIT 人为截断；"
-            "用 WHERE（含时间窗口）过滤即可。"
-            "仅探查样例可限 1 行，或用户明确要求 Top N 时才限行。"
-            "达梦不支持 LIMIT（探查用 ROWNUM）；MySQL 探查用 LIMIT。"
+            "执行经过 AST 校验的单条只读 SELECT，可包含只读 CTE 和子查询。"
+            "服务器在 SQL 中强制限制最多 100 行并设置执行超时，已有更小限行会保留。"
+            "前端展示限额内结果，你收到少量样本；达到上限时不能声称返回全部数据。"
+            "请用 WHERE（含时间窗口）缩小范围，统计总量应使用 COUNT/SUM 等聚合。"
+            "禁止写操作、锁定、变量赋值、危险函数和未审核的自定义函数。"
             "写 SQL 前应先 describe_table 确认字段。"
         )
 
@@ -202,9 +209,13 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
         return RunSqlToolArgs
 
     async def execute(self, context: ToolContext, args: RunSqlToolArgs) -> ToolResult:
-        # 与 sql-agent tools.run_sql 一致：先校验，再进连接池
-        if not validate_sql(args.sql):
-            msg = "不安全的sql语句，拒绝执行"
+        # Reject before borrowing a connection; runners validate again for direct callers.
+        try:
+            prepared_sql = prepare_readonly_sql(
+                args.sql, dialect=self._dialect, max_rows=self._max_result_rows
+            )
+        except SqlValidationError as error:
+            msg = str(error)
             return ToolResult(
                 success=False,
                 result_for_llm=msg,
@@ -216,13 +227,14 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
         last_error: Exception | None = None
         for attempt in range(2):
             try:
-                execution = await asyncio.to_thread(self._execute_once, args.sql)
+                execution = await asyncio.to_thread(self._execute_once, prepared_sql)
+                executed_sql = execution.executed_sql or prepared_sql
                 columns = execution.columns
                 rows = execution.rows
                 component = build_result_component(
                     columns,
                     rows,
-                    args.sql,
+                    executed_sql,
                     query_truncated=execution.truncated,
                     max_frontend_rows=self._max_frontend_rows,
                 )
@@ -246,7 +258,8 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
                             column.name: column.data_type
                             for column in component.columns
                         },
-                        "sql": args.sql,
+                        "sql": executed_sql,
+                        "requested_sql": args.sql,
                         "truncated": component.truncated,
                     },
                 )
@@ -261,6 +274,20 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
                 )
             except Exception as e:
                 last_error = e
+                # A timed-out query must not immediately be run a second time.
+                if (
+                    isinstance(e, TimeoutError)
+                    or (e.args and e.args[0] in (3024, 1969))
+                    or any(word in str(e).lower() for word in ("timeout", "timed out", "超时"))
+                ):
+                    return ToolResult(
+                        success=False,
+                        result_for_llm="SQL 执行超时，请缩小查询范围或简化查询后重试。",
+                        user_error="查询超时，请缩小查询范围。",
+                        error="sql_query_timeout",
+                        metadata={"sql": prepared_sql, "requested_sql": args.sql,
+                                  "error_code": "sql_query_timeout"},
+                    )
                 if attempt == 0:
                     logger.warning("SQL 执行失败，准备重试: %s", e)
                     continue

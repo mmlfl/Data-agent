@@ -9,6 +9,7 @@ from typing import List, Optional
 from sql_agent.core.system_prompt.base import SystemPromptBuilder
 from sql_agent.core.tool.models import ToolSchema
 from sql_agent.core.user.models import User
+from sql_agent.capabilities.sql_runner.models import MAX_QUERY_ROWS
 
 
 def _dialect_notes(dialect: str) -> str:
@@ -16,13 +17,13 @@ def _dialect_notes(dialect: str) -> str:
     if key in ("mysql",):
         return (
             "当前库方言：MySQL。\n"
-            "- 探查样例可用 `LIMIT 1`；正式业务查询不要随便加 LIMIT。\n"
+            "- 探查样例可用 `LIMIT 1`；服务器会将最终查询限制为最多 100 行。\n"
             "- 不要使用达梦/Oracle 的 ROWNUM。"
         )
     return (
         "当前库方言：达梦（Dameng）。\n"
-        "- 探查样例可用 `WHERE ROWNUM <= 1`；正式业务查询不要随便加 ROWNUM。\n"
-        "- 不支持 MySQL 的 LIMIT。"
+        "- 探查样例可用 `FETCH FIRST 1 ROWS ONLY`。\n"
+        "- 服务器用 Oracle 兼容语法生成限行 SQL，最多返回 100 行。"
     )
 
 
@@ -38,9 +39,9 @@ class DefaultSystemPromptBuilder(SystemPromptBuilder):
     ) -> None:
         self.base_prompt = base_prompt
         self.dialect = dialect or os.getenv("DB_DIALECT", "dm")
-        self.max_result_rows = max_result_rows or int(
-            os.getenv("DB_MAX_RESULT_ROWS", "500")
-        )
+        self.max_result_rows = min(MAX_QUERY_ROWS, max_result_rows or int(
+            os.getenv("DB_MAX_RESULT_ROWS", "100")
+        ))
 
     async def build_system_prompt(
         self, user: User, tools: List[ToolSchema]
@@ -58,9 +59,10 @@ class DefaultSystemPromptBuilder(SystemPromptBuilder):
             "## 结果双通道（重要）",
             "- run_sql 会把完整结果（服务端安全上限内）送给前端画布展示/导出。",
             "- 回给你的文本只是少量样本，用于继续推理，避免上下文爆炸。",
-            "- 因此：正式查询不要为了「怕太多」而写 ROWNUM/LIMIT；让 WHERE 条件决定结果集。",
-            f"- 服务端最多返回约 {self.max_result_rows} 行；若达到上限，工具结果会提示截断。",
-            "- 仅在这两种情况限行：① 探查字段形态取 1 行；② 用户明确要求 Top N / 前几条。",
+            "- 服务端通过 AST 为最终查询注入限行并设置执行超时，不能绕过此限制。",
+            f"- 最多返回 {self.max_result_rows} 行；达到上限时结果可能不完整，不得将样本行数当作总量。",
+            "- 用 WHERE 缩小查询范围；需要总量或整体统计时，在 SQL 中使用 COUNT/SUM 等聚合。",
+            "- 保留用户明确要求的更小 Top N；限行不能代替业务条件。",
             "",
             "## 时间语义",
             "- 「最近 / 近期 / 最新」优先写成时间窗口 WHERE，而不是 ORDER BY + Top N。",
@@ -71,7 +73,7 @@ class DefaultSystemPromptBuilder(SystemPromptBuilder):
             "## 工作方式",
             "1. 用 list_tables / describe_table 定位表与字段，再写 SQL。",
             "2. 必要时先取 1 行确认真实数据形态，再写带业务条件的正式 SELECT。",
-            "3. 只读 SELECT；禁止写操作与多语句拼接。",
+            "3. 只读 SELECT；AST 校验拒绝写操作、多语句、锁定、危险函数及未审核自定义函数。",
             "4. 根据样本与总行数给出中文结论；细节让用户在画布中查看。",
         ]
         if tool_names:

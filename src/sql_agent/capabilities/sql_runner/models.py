@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
+MAX_QUERY_ROWS = 100
+
 
 @dataclass(frozen=True, slots=True)
 class SqlExecutionResult:
@@ -12,6 +14,7 @@ class SqlExecutionResult:
     columns: list[str]
     rows: list[tuple]
     truncated: bool = False
+    executed_sql: str | None = None
 
 
 class RunSqlToolArgs(BaseModel):

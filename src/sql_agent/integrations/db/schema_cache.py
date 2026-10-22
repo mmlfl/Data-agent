@@ -9,6 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from pandas.io.sas.sas_constants import column_name_length_length
+
+from sql_agent.capabilities.knoledge_store.models import ApprovalStatus
+from sql_agent.capabilities.knoledge_store.records import build_ddl_record
 from sql_agent.integrations.db.db_settings import DbSettings
 from sql_agent.integrations.db.sql_runner_pool import SqlRunnerPool
 
@@ -113,6 +117,59 @@ class SchemaCache:
                 "table_count": self.table_count(),
             }
 
+
+    def export_schema_documents(self) -> list[dict]:
+        """表级文档: 给我KnowldegeStore同步用"""
+        documents: list[dict] = []
+        with self._lock:
+            with self._connect() as conn:
+                tables = conn.execute(
+                    "SELECT table_name,schema_name,table_comment FROM tables"
+                ).fetchall()
+                for table_name,schema_name,table_comment in tables:
+                    cols = conn.execute(
+                        """
+                        SELECT column_name,data_type,column_comment
+                        FROM columns WHERE table_name = ?
+                        ORDER BY id
+                        """,
+                        (table_name,),
+                    ).fetchall()
+                    documents.append(
+                        {
+                            "table_name": table_name,
+                            "schema_name": schema_name,
+                            "table_comment": table_comment,
+                            "columns":[
+                                {
+                                    "name": c[0],
+                                    "data_type": c[1] or "",
+                                    "comment": c[2] or "",
+                                }
+                                for c in cols
+                            ],
+                        }
+                    )
+
+
+        return documents
+
+    def sync_milvus(self):
+        docs = self.export_schema_documents()
+        records = [
+            build_ddl_record(
+                table_name=doc["table_name"],
+                table_comment=doc["table_comment"],
+                columns=doc["columns"],
+                source_id=doc["table_name"],
+                source="schema_cache",
+                approval_status=ApprovalStatus.APPROVED,
+                active=True,
+                metadata={"schema_name": doc["schema_name"]},
+            )
+            for doc in docs
+        ]
+
     def sync(self) -> None:
         """Pull full schema from the live database (dm or mysql) into SQLite."""
         with self._lock:
@@ -162,6 +219,7 @@ class SchemaCache:
                 len(columns),
                 elapsed,
             )
+
 
     def search_tables(self, keyword: str) -> List[dict]:
         """SQLite first; if empty, query live DB and upsert hits."""

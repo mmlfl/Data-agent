@@ -35,6 +35,9 @@ export function createInitialChatState(conversationId: string): ChatState {
     resultOrder: [],
     activeResultId: null,
     phase: "idle",
+    contextTokens: 0,
+    contextWindowTokens: 256_000,
+    contextNotice: null,
   };
 }
 
@@ -78,6 +81,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: [...state.messages, action.userMessage, action.assistantMessage],
         activeAssistantId: action.assistantMessage.id,
         phase: "streaming",
+        contextNotice: null,
       };
 
     case "set_active_result":
@@ -144,16 +148,44 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   let phase = state.phase;
   let conversationId = state.conversationId;
   let activeAssistantId = state.activeAssistantId;
+  let contextTokens = state.contextTokens;
+  let contextWindowTokens = state.contextWindowTokens;
+  let contextNotice = state.contextNotice;
   const isActiveTurn = activeAssistantId === assistantId;
+
+  const nextTokens = asNumber(metadata.context_tokens);
+  const nextWindow = asNumber(metadata.context_window_tokens);
+  if (isActiveTurn && nextTokens != null && nextTokens >= 0) contextTokens = nextTokens;
+  if (isActiveTurn && nextWindow != null && nextWindow > 0) contextWindowTokens = nextWindow;
 
   if (event.type === "status") {
     const statusText = event.content ?? null;
     if (statusText === "summarizing" && isActiveTurn) phase = "summarizing";
-    messages = updateMessage(messages, assistantId, (message) => ({
-      ...message,
-      phase: statusText === "summarizing" ? "summarizing" : message.phase,
-      statusText,
-    }));
+    if (statusText === "context_refreshed" && isActiveTurn) {
+      const notice =
+        typeof metadata.message === "string"
+          ? metadata.message
+          : "模型上下文已刷新，保留当前任务继续执行。聊天记录仍可查看。";
+      contextNotice = notice;
+
+    }
+    if (
+      statusText === "context_refreshed" ||
+      statusText === "context_usage" ||
+      statusText === "context_overflow" ||
+      statusText === "context_tool_truncated"
+    ) {
+      // Don't overwrite assistant statusText with internal context markers.
+    } else {
+      messages = updateMessage(messages, assistantId, (message) => ({
+        ...message,
+        phase: statusText === "summarizing" ? "summarizing" : message.phase,
+        statusText,
+      }));
+    }
+    if (isActiveTurn && (statusText === "context_overflow" || statusText === "context_tool_truncated") && typeof metadata.message === "string") {
+      contextNotice = metadata.message;
+    }
   } else if (event.type === "text_delta" && event.content) {
     messages = updateMessage(messages, assistantId, (message) => ({
       ...message,
@@ -257,6 +289,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     if (typeof nextConversationId === "string" && nextConversationId) {
       conversationId = nextConversationId;
     }
+    if (isActiveTurn && metadata.context_refreshed === true && !contextNotice) {
+      contextNotice = "模型上下文已刷新，聊天记录仍可查看。";
+    }
     messages = updateMessage(messages, assistantId, (message) => ({
       ...message,
       phase: phaseAfterFinish(message.phase ?? "streaming"),
@@ -274,5 +309,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     resultOrder,
     activeResultId,
     phase,
+    contextTokens,
+    contextWindowTokens,
+    contextNotice,
   };
 }

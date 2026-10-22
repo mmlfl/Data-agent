@@ -56,4 +56,9 @@ export interface ChatState {
   resultOrder: string[];
   activeResultId: string | null;
   phase: TurnPhase;
+  /** Approximate context tokens from backend (system + history). */
+  contextTokens: number;
+  contextWindowTokens: number;
+  /** Last refresh notice for UI banner. */
+  contextNotice: string | null;
 }

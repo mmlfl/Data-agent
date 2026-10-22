@@ -9,7 +9,7 @@ from typing import Any, List, Optional, Tuple
 
 from sql_agent.capabilities.sql_runner import SqlExecutionResult, SqlRunner
 from sql_agent.integrations.db.db_settings import DbSettings
-from sql_agent.integrations.db.sql_validate import validate_sql
+from sql_agent.integrations.db.sql_validate import MAX_QUERY_ROWS, prepare_readonly_sql
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ class DamengRunner(SqlRunner):
                     password=self.settings.db_password,
                     host=self.settings.db_host,
                     port=self.settings.db_port,
+                    connection_timeout=self.settings.db_query_timeout_seconds,
                 )
                 # 与 sql-agent 一致：关闭自动提交，由只读事务显式控制
                 self.connection.autocommit = False
@@ -127,27 +128,27 @@ class DamengRunner(SqlRunner):
     def execute_readonly(
         self, sql: str, *, max_rows: int
     ) -> SqlExecutionResult:
-        """对齐 sql-agent tools._execute_sql：校验 → 只读事务 → 执行。"""
-        if not validate_sql(sql):
-            raise PermissionError("不安全的sql语句，拒绝执行")
+        """AST 校验与限行 → 只读事务 → 带驱动执行超时的查询。"""
         if max_rows <= 0:
             raise ValueError("max_rows must be positive")
+        max_rows = min(max_rows, MAX_QUERY_ROWS)
+        prepared_sql = prepare_readonly_sql(sql, dialect="dm", max_rows=max_rows)
 
         self.ensure_connection()
         self.reset_transaction()
         cursor = self.connection.cursor()
         try:
             self.begin_readonly(cursor)
-            cleaned = sql.strip().rstrip(";").strip()
-            cursor.execute(cleaned)
+            cursor.execute(prepared_sql)
             columns = [col[0] for col in (cursor.description or [])]
             fetched = (
-                list(cursor.fetchmany(max_rows + 1)) if cursor.description else []
+                list(cursor.fetchmany(max_rows)) if cursor.description else []
             )
             return SqlExecutionResult(
                 columns=columns,
                 rows=fetched[:max_rows],
-                truncated=len(fetched) > max_rows,
+                truncated=len(fetched) >= max_rows,
+                executed_sql=prepared_sql,
             )
         finally:
             cursor.close()

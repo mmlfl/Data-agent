@@ -11,6 +11,7 @@ from typing import Any, Optional, Type
 from pydantic import BaseModel, Field, ValidationError
 
 from sql_agent.components import ChartSpec, DataColumn, FinalResultComponent
+from sql_agent.core.context.tokens import estimate_request_tokens
 from sql_agent.core.llm import LlmMessage, LlmRequest, LlmService
 from sql_agent.core.tool.base import Tool
 from sql_agent.core.tool.models import ToolContext, ToolResult
@@ -259,9 +260,15 @@ class FinalizeResultTool(Tool[FinalizeResultArgs]):
 
         for attempt in range(self._max_retries + 1):
             try:
-                response = await self._llm.send_request(
-                    self._build_request(context, args, attempt, last_error)
-                )
+                request = self._build_request(context, args, attempt, last_error)
+                window = context.metadata.get("context_window_tokens", 256_000)
+                safety = context.metadata.get("context_safety_tokens", int(window * 0.05))
+                if estimate_request_tokens(request) + (request.max_tokens or 0) + safety > window:
+                    # Keep the SQL result and use the existing deterministic fallback.
+                    # Do not cut JSON in half or send another oversized request.
+                    logger.warning("Finalizer input exceeds context budget; using deterministic result")
+                    break
+                response = await self._llm.send_request(request)
                 if not response.content:
                     raise ValueError("LLM returned an empty final result")
                 generated = _GeneratedFinalResult.model_validate(
