@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from "react";
 import type { ChatMessage as ChatMessageType, ToolCallRecord } from "../types";
 import { ChatMessage } from "./ChatMessage";
 import { Composer } from "./Composer";
-import { EmptyState } from "./EmptyState";
 
 const NEAR_BOTTOM_PX = 96;
 
@@ -63,8 +62,8 @@ export function ConversationPane({
     <section className="conversation-pane" aria-label="分析对话">
       <header className="pane-heading">
         <div>
-          <span className="pane-heading__eyebrow">Conversation</span>
-          <h2>分析对话</h2>
+          <span className="pane-heading__eyebrow">ANALYSIS</span>
+          <h2>与数据对话</h2>
         </div>
         <span className="pane-heading__meta">
           {assistantCount > 0 ? `${assistantCount} 轮分析` : "等待问题"}
@@ -72,26 +71,19 @@ export function ConversationPane({
       </header>
 
       <div className="conversation-pane__scroll" ref={scrollRef}>
-        {messages.length === 0 ? (
-          <EmptyState
-            onSend={(prompt) => onSend(prompt)}
-            disabled={disabled || loading}
-          />
-        ) : (
-          messages.map((message) => {
-            const calls = (message.toolCallIds ?? [])
-              .map((id) => toolCalls[id])
-              .filter((call): call is ToolCallRecord => Boolean(call));
-            return (
-              <ChatMessage
-                key={message.id}
-                message={message}
-                calls={calls}
-                onOpenResult={onOpenResult}
-              />
-            );
-          })
-        )}
+        {messages.map((message) => {
+          const calls = (message.toolCallIds ?? [])
+            .map((id) => toolCalls[id])
+            .filter((call): call is ToolCallRecord => Boolean(call));
+          return (
+            <ChatMessage
+              key={message.id}
+              message={message}
+              calls={calls}
+              onOpenResult={onOpenResult}
+            />
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 

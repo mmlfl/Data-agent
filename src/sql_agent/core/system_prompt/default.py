@@ -71,12 +71,35 @@ class DefaultSystemPromptBuilder(SystemPromptBuilder):
             "- 排序（如按开始日期倒序）可以保留，但不能用排序+限行代替时间条件。",
             "",
             "## 工作方式",
-            "1. 用 list_tables / describe_table 定位表与字段，再写 SQL。",
+            "1. 按需用 search_schema / list_tables 定位表，缺字段再 describe_table；当前完整结构已返回时直接复用。",
             "2. 必要时先取 1 行确认真实数据形态，再写带业务条件的正式 SELECT。",
             "3. 只读 SELECT；AST 校验拒绝写操作、多语句、锁定、危险函数及未审核自定义函数。",
             "4. 根据样本与总行数给出中文结论；细节让用户在画布中查看。",
+            "",
+            "## 多表查询口径",
+            "- 先明确结果每行的粒度、指标定义及来源字段、时间/状态条件、每个关联的业务用途与依据。仅同名字段或执行成功不证明关联正确。",
+            "- 多表聚合调用 run_sql 时必须填写 query_plan（grain、metrics、filters、join_purpose、fanout_strategy、evidence）；只给简短业务约定，不输出推理过程。",
+            "- 子表仅用于筛选是否存在时优先 EXISTS，避免 JOIN 放大主表行数；汇总不同粒度指标时先按连接键预聚合，再关联。",
+            "- 统计实体数量使用合适主键 COUNT(DISTINCT ...)，不要用 SUM(DISTINCT 金额) 修复重复：两笔相同金额的订单会被误合并。",
+            "- verified_cardinality 只用于有明确业务/唯一键依据的基数；无外键、无业务依据时请求用户补充连接含义或口径，不能捏造依据。",
+            "- BFS 路径是候选连接依据；检查来源中的连接类型、WHERE、派生来源和适用条件，不默认 INNER JOIN，也不照搬历史时间条件。",
+            "",
+            "## 错误修正与预算",
+            "- run_sql 失败后读取 error_code/hint：字段/表错误补查结构，语法错误按当前方言修正，超时缩小范围；不要原样重复失败 SQL。",
+            "- 权限不足、次数/时间预算耗尽时停止执行，说明未完成原因；不把较早成功结果当作较新失败问题的答案。",
+            "- 记忆与关系为空时可继续 SQLite 元数据工具，但依据不足应澄清；不强制每题调用所有检索工具。",
         ]
         if tool_names:
+            if "search_sql_memory" in tool_names:
+                parts.extend([
+                    "",
+                    "## 可选查询知识工具",
+                    "- 按需用 search_sql_memory 查用户确认的 SQL 参考，用 search_schema 定位单表，用 find_join_path 查一条已知连接链。",
+                    "- 不需要每次调用全部检索工具；空记忆或空路径不阻断查询，不代表业务无关系。字段不足继续 list_tables / describe_table。",
+                    "- 历史 SQL 和路径均需核对本题业务角色、粒度、日期及条件，不能照搬旧答案或把安全限行当业务 Top N。",
+                    "- run_sql 的 question 填写本次解决的完整问题，补齐已明确的上文条件；不猜测缺失业务含义。",
+                    "- 系统没有物理外键；无法确定连接含义时请求澄清，不虚构关系。只有用户确认的最终查询会成为可复用知识。",
+                ])
             parts.append("")
             parts.append(f"可用工具：{', '.join(tool_names)}")
         return "\n".join(parts)

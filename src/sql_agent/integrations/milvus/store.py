@@ -4,9 +4,7 @@ from typing import Any
 
 from pymilvus import MilvusClient
 
-from sql_agent.integrations.milvus.client import create_milvus_client
 from sql_agent.integrations.milvus.schema import ensure_dense_collection
-from sql_agent.integrations.milvus.settings import MilvusSettings
 
 _DEFAULT_SEARCH_PARAMS: dict[str, Any] = {"metric_type": "COSINE"}
 _DEFAULT_OUTPUT_FIELDS = ["text", "database_id", "tenant_id", "active"]
@@ -217,10 +215,3 @@ class MilvusStore:
 
     def close(self) -> None:
         self._client.close()
-
-_settings = MilvusSettings()
-store = MilvusStore(
-    client=create_milvus_client(_settings),
-    collection_name=_settings.milvus_collection_name,
-    timeout=_settings.milvus_action_timeout_seconds
-)

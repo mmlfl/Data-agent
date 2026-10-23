@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import re
-from typing import Any, Optional, Type
+import time
+from typing import Any, Literal, Optional, Type
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -31,6 +33,7 @@ class FinalizeResultArgs(BaseModel):
     sample_strategy: str = "systematic"
     draft: Optional[str] = None
     partial: bool = False
+    partial_reason: Literal["tool_limit", "time_budget"] = "tool_limit"
 
 
 class _GeneratedFinalResult(BaseModel):
@@ -268,7 +271,14 @@ class FinalizeResultTool(Tool[FinalizeResultArgs]):
                     # Do not cut JSON in half or send another oversized request.
                     logger.warning("Finalizer input exceeds context budget; using deterministic result")
                     break
-                response = await self._llm.send_request(request)
+                deadline = context.metadata.get("request_deadline")
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    response = await asyncio.wait_for(self._llm.send_request(request), remaining)
+                else:
+                    response = await self._llm.send_request(request)
                 if not response.content:
                     raise ValueError("LLM returned an empty final result")
                 generated = _GeneratedFinalResult.model_validate(
@@ -305,7 +315,8 @@ class FinalizeResultTool(Tool[FinalizeResultArgs]):
                 sample_note += f"；服务端已限制结果，返回 {total} 行"
             warnings.append(sample_note)
         if args.partial:
-            warnings.append("工具调用达到上限，结论基于最后一次成功查询")
+            warnings.append("工具调用达到上限，结论基于最后一次成功查询" if args.partial_reason == "tool_limit"
+                            else "本轮时间预算已耗尽，结论仅基于最后一次成功查询，任务可能未完成")
         if chart_warning:
             warnings.append(chart_warning)
         if fallback_used:

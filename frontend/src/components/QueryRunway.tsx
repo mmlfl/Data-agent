@@ -8,8 +8,10 @@ function resultSummary(call: ToolCallRecord): string {
   if (call.status === "running") return "处理中";
   if (call.status === "error") return "需要检查";
   if (!component) return "已完成";
-  if (component.type === "table_list") return `${component.tables.length} 张候选表`;
-  if (component.type === "table_schema") return `${component.columns.length} 个字段`;
+  if (component.type === "table_list")
+    return `${component.tables.length} 张候选表`;
+  if (component.type === "table_schema")
+    return `${component.columns.length} 个字段`;
   if (component.type === "dataframe") return `${component.row_count} 行`;
   return "结论已生成";
 }
@@ -32,7 +34,10 @@ export function QueryRunway({ calls }: { calls: ToolCallRecord[] }) {
     <div className="runway" aria-label="查询执行轨迹">
       <div className="runway__eyebrow">
         <span>Query runway</span>
-        <span>{orderedCalls.filter((call) => call.status === "success").length}/{orderedCalls.length}</span>
+        <span>
+          {orderedCalls.filter((call) => call.status === "success").length}/
+          {orderedCalls.length}
+        </span>
       </div>
       <ol className="runway__list">
         {orderedCalls.map((call) => {

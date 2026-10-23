@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from sql_agent.components import UiComponent
 from sql_agent.core.events import PROTOCOL_VERSION
@@ -35,6 +35,11 @@ class CacheSyncResponse(BaseModel):
 
 class ToolsResponse(BaseModel):
     tools: list[str]
+
+
+class QueryFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    verdict: Literal["satisfied", "unsatisfied"]
 
 
 class AgentEventDTO(BaseModel):

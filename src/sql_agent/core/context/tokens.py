@@ -53,6 +53,8 @@ def estimate_message_tokens(message: Message) -> int:
     total = 4  # role / framing overhead
     if message.content:
         total += estimate_text_tokens(message.content)
+    if message.reasoning_content:
+        total += estimate_text_tokens(message.reasoning_content)
     if message.tool_calls:
         for call in message.tool_calls:
             total += estimate_text_tokens(getattr(call, "name", "") or "")

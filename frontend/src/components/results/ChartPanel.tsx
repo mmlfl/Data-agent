@@ -18,14 +18,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type {
-  ChartSpec,
-  ChartType,
-  DataFrameComponent,
-} from "../../types";
+import type { ChartSpec, ChartType, DataFrameComponent } from "../../types";
 import { prepareSeries } from "./chartPrepare";
 
-const CHART_COLORS = ["#137c7e", "#315fca", "#d08a2e", "#7956a8", "#4c8f5c"];
+const CHART_COLORS = ["#448574", "#6d8bc6", "#c69b55", "#9b85bd", "#7a9c6b"];
 const MAX_CHART_ROWS = 100;
 
 const CHART_LABELS: Record<Exclude<ChartType, "none">, string> = {
@@ -87,7 +83,9 @@ export function ChartPanel({
   if (!chartType || !spec.x_field || prepared.rows.length === 0) {
     return (
       <div className="chart-empty">
-        <span className="chart-empty__glyph" aria-hidden="true">⌁</span>
+        <span className="chart-empty__glyph" aria-hidden="true">
+          ⌁
+        </span>
         <strong>当前结果更适合表格查看</strong>
         <p>{spec.reason || "缺少可用于稳定绘图的分类、时间或数值字段。"}</p>
       </div>
@@ -159,7 +157,10 @@ export function ChartPanel({
       >
         <ResponsiveContainer width="100%" height="100%">
           {chartType === "bar" ? (
-            <BarChart data={prepared.rows} margin={{ top: 12, right: 18, left: 0, bottom: 8 }}>
+            <BarChart
+              data={prepared.rows}
+              margin={{ top: 12, right: 18, left: 0, bottom: 8 }}
+            >
               {commonAxes}
               {prepared.keys.map((series, index) => (
                 <Bar
@@ -173,7 +174,10 @@ export function ChartPanel({
               ))}
             </BarChart>
           ) : chartType === "line" ? (
-            <LineChart data={prepared.rows} margin={{ top: 12, right: 18, left: 0, bottom: 8 }}>
+            <LineChart
+              data={prepared.rows}
+              margin={{ top: 12, right: 18, left: 0, bottom: 8 }}
+            >
               {commonAxes}
               {prepared.keys.map((series, index) => (
                 <Line
@@ -189,7 +193,10 @@ export function ChartPanel({
               ))}
             </LineChart>
           ) : chartType === "area" ? (
-            <AreaChart data={prepared.rows} margin={{ top: 12, right: 18, left: 0, bottom: 8 }}>
+            <AreaChart
+              data={prepared.rows}
+              margin={{ top: 12, right: 18, left: 0, bottom: 8 }}
+            >
               {commonAxes}
               {prepared.keys.map((series, index) => (
                 <Area
@@ -256,7 +263,9 @@ export function ChartPanel({
         </ResponsiveContainer>
       </div>
 
-      {(data.rows.length > MAX_CHART_ROWS || data.truncated || prepared.aggregated) && (
+      {(data.rows.length > MAX_CHART_ROWS ||
+        data.truncated ||
+        prepared.aggregated) && (
         <p className="chart-panel__note">
           {prepared.aggregated && aggregationLabel
             ? `相同横轴存在重复记录，已按 ${aggregationLabel} 聚合后再绘图。`

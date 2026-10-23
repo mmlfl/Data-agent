@@ -3,6 +3,7 @@ import type { ResultArtifact, TurnPhase } from "../../types";
 import { QueryResultTable } from "../QueryResultTable";
 import { ResultSummary } from "./ResultSummary";
 import { SqlDisclosure } from "./SqlDisclosure";
+import { Icon } from "../Icon";
 
 const ChartPanel = lazy(() =>
   import("./ChartPanel").then((module) => ({ default: module.ChartPanel })),
@@ -38,8 +39,8 @@ export function ResultPane({
     <section className="result-pane" aria-label="查询洞察画布">
       <header className="pane-heading pane-heading--result">
         <div>
-          <span className="pane-heading__eyebrow">Evidence canvas</span>
-          <h2>洞察画布</h2>
+          <span className="pane-heading__eyebrow">INSIGHTS & DATA</span>
+          <h2>查询结果</h2>
         </div>
         {active && (
           <span className="pane-heading__meta">
@@ -51,13 +52,20 @@ export function ResultPane({
       {!active ? (
         <div className="result-empty">
           <div className="result-empty__frame" aria-hidden="true">
-            <span /><span /><span /><span />
+            <span />
+            <span />
+            <span />
+            <span />
             <i />
           </div>
-          <span className="result-empty__eyebrow">No evidence yet</span>
-          <h3>结果将在这里保持可见</h3>
+          <span className="result-empty__eyebrow">A SPACE FOR DISCOVERY</span>
+          <h3>
+            {phase === "streaming" || phase === "summarizing"
+              ? "正在寻找数据中的答案"
+              : "下一份洞察，在这里呈现"}
+          </h3>
           <p>
-            左侧完成 SQL 查询后，这里会固定显示结论、图表、数据表和实际执行语句，方便你边看结果边继续追问。
+            查询完成后，在这里查看分析结论、交互图表与原始数据。继续追问时，结果依然保持可见。
           </p>
         </div>
       ) : (
@@ -72,7 +80,8 @@ export function ResultPane({
                   onClick={() => onSelectResult(artifact.id)}
                 >
                   <span>Q{String(index + 1).padStart(2, "0")}</span>
-                  {artifact.finalResult?.title || `${artifact.data.row_count} 行结果`}
+                  {artifact.finalResult?.title ||
+                    `${artifact.data.row_count} 行结果`}
                 </button>
               ))}
             </nav>
@@ -85,7 +94,11 @@ export function ResultPane({
 
           <div className="result-view">
             <header className="result-view__toolbar">
-              <div className="result-view__tabs" role="tablist" aria-label="结果视图">
+              <div
+                className="result-view__tabs"
+                role="tablist"
+                aria-label="结果视图"
+              >
                 <button
                   type="button"
                   role="tab"
@@ -94,6 +107,7 @@ export function ResultPane({
                   disabled={!hasChart}
                   onClick={() => setView("chart")}
                 >
+                  <Icon name="chart" size={14} />
                   图表
                 </button>
                 <button
@@ -103,6 +117,7 @@ export function ResultPane({
                   className={view === "table" ? "is-active" : ""}
                   onClick={() => setView("table")}
                 >
+                  <Icon name="table" size={14} />
                   数据
                 </button>
               </div>
@@ -127,7 +142,7 @@ export function ResultPane({
                   />
                 </Suspense>
               ) : (
-                <QueryResultTable data={active.data} />
+                <QueryResultTable key={active.id} data={active.data} />
               )}
             </div>
           </div>

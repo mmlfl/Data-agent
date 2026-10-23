@@ -18,6 +18,9 @@ class AgentConfig(BaseModel):
     """Configuration for agent behavior."""
 
     max_tool_iterations: int = Field(default=10, gt=0)
+    max_sql_attempts: int = Field(default=6, gt=0, le=30)
+    max_sql_repairs: int = Field(default=3, gt=0, le=10)
+    max_request_seconds: float = Field(default=180, gt=0, le=1800)
     stream_responses: bool = Field(default=True)
     auto_save_conversations: bool = Field(default=True)
     include_thinking_indicators: bool = Field(default=True)

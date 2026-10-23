@@ -2,7 +2,9 @@ import type { ToolCallRecord } from "../types";
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
-  return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+  return typeof value === "object"
+    ? JSON.stringify(value, null, 2)
+    : String(value);
 }
 
 export function ToolDetail({ call }: { call: ToolCallRecord }) {
@@ -66,7 +68,8 @@ export function ToolDetail({ call }: { call: ToolCallRecord }) {
     return (
       <div className="tool-detail">
         <div className="tool-detail__label">
-          <code>{component.table_name}</code> · {component.columns.length} 个字段
+          <code>{component.table_name}</code> · {component.columns.length}{" "}
+          个字段
         </div>
         <div className="tool-detail__schema-wrap">
           <table className="tool-detail__schema">
@@ -81,7 +84,9 @@ export function ToolDetail({ call }: { call: ToolCallRecord }) {
             <tbody>
               {component.columns.map((column) => (
                 <tr key={column.column_name}>
-                  <td><code>{column.column_name}</code></td>
+                  <td>
+                    <code>{column.column_name}</code>
+                  </td>
                   <td>{column.data_type || "—"}</td>
                   <td>{column.is_nullable || "—"}</td>
                   <td>{column.column_comment || "—"}</td>

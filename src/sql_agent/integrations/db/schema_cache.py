@@ -5,18 +5,61 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from pandas.io.sas.sas_constants import column_name_length_length
-
-from sql_agent.capabilities.knoledge_store.models import ApprovalStatus
-from sql_agent.capabilities.knoledge_store.records import build_ddl_record
 from sql_agent.integrations.db.db_settings import DbSettings
 from sql_agent.integrations.db.sql_runner_pool import SqlRunnerPool
 
 logger = logging.getLogger(__name__)
+
+
+def read_cached_schema_documents(
+    db_path: str | Path, *, table_names: list[str] | None = None
+) -> list[dict]:
+    """Read an existing cache snapshot without creating a DB or opening a business connection."""
+    path = Path(db_path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError("SQLite 元数据缓存不存在，请先同步业务库元数据")
+    if table_names == []:
+        return []
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=10)) as conn:
+        conn.execute("BEGIN")  # Pin the same SQLite snapshot across table/column reads.
+        return read_schema_snapshot(conn, table_names=table_names)
+
+
+def read_schema_snapshot(conn: sqlite3.Connection, *, table_names=None) -> list[dict]:
+    """Read on the caller's transaction; two queries, rather than one per table."""
+    query = "SELECT table_name, schema_name, table_comment FROM tables"
+    parameters: list[str] = []
+    if table_names:
+        parameters = list(dict.fromkeys(table_names))
+        query += " WHERE table_name IN (" + ",".join("?" for _ in parameters) + ")"
+    tables = conn.execute(query + " ORDER BY schema_name, table_name", parameters).fetchall()
+    if table_names and set(table_names) - {row[0] for row in tables}:
+        raise ValueError("指定的表未全部出现在 SQLite 缓存中，请检查名称或刷新缓存")
+    by_table = {}
+    column_query = (
+        "SELECT table_name,column_name,data_type,column_comment,is_nullable,data_length "
+        "FROM columns"
+    )
+    if parameters:
+        column_query += " WHERE table_name IN (" + ",".join("?" for _ in parameters) + ")"
+    for row in conn.execute(column_query + " ORDER BY table_name,id", parameters):
+        by_table.setdefault(row[0], []).append(row[1:])
+    documents = []
+    for table_name, schema_name, comment in tables:
+        columns = by_table.get(table_name, [])
+        documents.append({
+            "table_name": table_name, "schema_name": schema_name or "",
+            "table_comment": comment or "", "columns": [
+                {"name": col[0], "data_type": col[1] or "", "comment": col[2] or "",
+                 "is_nullable": col[3], "data_length": col[4]} for col in columns
+            ],
+        })
+    return documents
 
 
 class SchemaCache:
@@ -118,57 +161,10 @@ class SchemaCache:
             }
 
 
-    def export_schema_documents(self) -> list[dict]:
-        """表级文档: 给我KnowldegeStore同步用"""
-        documents: list[dict] = []
+    def export_schema_documents(self, *, table_names: list[str] | None = None) -> list[dict]:
+        """Export all cached fields; vector synchronization is a separate service."""
         with self._lock:
-            with self._connect() as conn:
-                tables = conn.execute(
-                    "SELECT table_name,schema_name,table_comment FROM tables"
-                ).fetchall()
-                for table_name,schema_name,table_comment in tables:
-                    cols = conn.execute(
-                        """
-                        SELECT column_name,data_type,column_comment
-                        FROM columns WHERE table_name = ?
-                        ORDER BY id
-                        """,
-                        (table_name,),
-                    ).fetchall()
-                    documents.append(
-                        {
-                            "table_name": table_name,
-                            "schema_name": schema_name,
-                            "table_comment": table_comment,
-                            "columns":[
-                                {
-                                    "name": c[0],
-                                    "data_type": c[1] or "",
-                                    "comment": c[2] or "",
-                                }
-                                for c in cols
-                            ],
-                        }
-                    )
-
-
-        return documents
-
-    def sync_milvus(self):
-        docs = self.export_schema_documents()
-        records = [
-            build_ddl_record(
-                table_name=doc["table_name"],
-                table_comment=doc["table_comment"],
-                columns=doc["columns"],
-                source_id=doc["table_name"],
-                source="schema_cache",
-                approval_status=ApprovalStatus.APPROVED,
-                active=True,
-                metadata={"schema_name": doc["schema_name"]},
-            )
-            for doc in docs
-        ]
+            return read_cached_schema_documents(self.db_path, table_names=table_names)
 
     def sync(self) -> None:
         """Pull full schema from the live database (dm or mysql) into SQLite."""
@@ -239,10 +235,10 @@ class SchemaCache:
                 self._upsert_tables(live)
             return live
 
-    def get_table_info(self, table_name: str) -> List[dict]:
+    def get_table_info(self, table_name: str, *, refresh: bool = False) -> List[dict]:
         """SQLite first; if empty, describe on live DB and upsert."""
         with self._lock:
-            rows = self._get_table_info_sqlite(table_name)
+            rows = [] if refresh else self._get_table_info_sqlite(table_name)
             if rows:
                 return rows
 
@@ -253,7 +249,7 @@ class SchemaCache:
             )
             with self.pool.borrow() as runner:
                 live = runner.describe_table(table_name)
-            if live:
+            if live or refresh:
                 self._upsert_table_columns(table_name, live)
             return live
 

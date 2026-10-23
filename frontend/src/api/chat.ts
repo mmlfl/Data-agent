@@ -1,31 +1,8 @@
-import type { AgentEvent, CacheSyncResponse, HealthResponse } from "../types";
+import type { AgentEvent, HealthResponse } from "../types";
 
 export async function fetchHealth(): Promise<HealthResponse> {
-  const res = await fetch("/health");
+  const res = await fetch("/health", { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
-  return res.json();
-}
-
-export async function syncCache(): Promise<CacheSyncResponse> {
-  const headers: Record<string, string> = {
-    "X-Requested-With": "SQL-Insight-Workbench",
-  };
-  const token = import.meta.env.VITE_CACHE_SYNC_TOKEN;
-  if (typeof token === "string" && token) {
-    headers["X-Cache-Sync-Token"] = token;
-  }
-
-  const res = await fetch("/api/cache/sync", { method: "POST", headers });
-  if (!res.ok) {
-    let detail = `同步失败: ${res.status}`;
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
-  }
   return res.json();
 }
 

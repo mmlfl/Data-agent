@@ -5,12 +5,7 @@ import type {
 } from "./components";
 
 export type TurnPhase =
-  | "idle"
-  | "streaming"
-  | "summarizing"
-  | "complete"
-  | "cancelled"
-  | "error";
+  "idle" | "streaming" | "summarizing" | "complete" | "cancelled" | "error";
 
 export interface ChatMessage {
   id: string;
@@ -21,6 +16,8 @@ export interface ChatMessage {
   toolCallIds?: string[];
   finalResult?: FinalResultComponent | null;
   error?: string | null;
+  queryId?: string | null;
+  confirmedQuestion?: string | null;
 }
 
 export type ToolCallStatus = "running" | "success" | "error";

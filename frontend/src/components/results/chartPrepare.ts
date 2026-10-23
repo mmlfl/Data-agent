@@ -1,8 +1,4 @@
-import type {
-  ChartAggregation,
-  ChartSpec,
-  ChartType,
-} from "../../types";
+import type { ChartAggregation, ChartSpec, ChartType } from "../../types";
 
 export interface PreparedSeries {
   rows: Record<string, unknown>[];
@@ -66,7 +62,9 @@ function aggregateByX(
     if (existing) duplicateGroups += 1;
     const bucket = existing ?? {
       xValue: row[xField],
-      values: Object.fromEntries(spec.y_fields.map((field) => [field, []] as const)),
+      values: Object.fromEntries(
+        spec.y_fields.map((field) => [field, []] as const),
+      ),
     };
     for (const yField of spec.y_fields) {
       const numeric = toNumber(row[yField]);

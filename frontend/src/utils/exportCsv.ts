@@ -1,7 +1,12 @@
 function escapeCell(value: unknown): string {
   if (value === null || value === undefined) return "";
   const s = String(value);
-  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+  if (
+    s.includes(",") ||
+    s.includes('"') ||
+    s.includes("\n") ||
+    s.includes("\r")
+  ) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
@@ -13,9 +18,13 @@ export function exportToCsv(
   filename = "query-result.csv",
 ): void {
   const header = columns.map(escapeCell).join(",");
-  const body = rows.map((row) => columns.map((col) => escapeCell(row[col])).join(",")).join("\n");
+  const body = rows
+    .map((row) => columns.map((col) => escapeCell(row[col])).join(","))
+    .join("\n");
   const bom = "\uFEFF";
-  const blob = new Blob([bom + header + "\n" + body], { type: "text/csv;charset=utf-8;" });
+  const blob = new Blob([bom + header + "\n" + body], {
+    type: "text/csv;charset=utf-8;",
+  });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;

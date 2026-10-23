@@ -9,7 +9,7 @@ import logging
 import os
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from sql_agent.core.events import PROTOCOL_VERSION
@@ -21,10 +21,58 @@ from sql_agent.servers.schemas import (
     ChatRequest,
     HealthResponse,
     ToolsResponse,
+    QueryFeedbackRequest,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _request_context(request: Request) -> RequestContext:
+    return RequestContext(cookies=dict(request.cookies), headers=dict(request.headers),
+                          remote_addr=request.client.host if request.client else None,
+                          query_params=dict(request.query_params))
+
+
+async def _knowledge_user(request: Request, *, mutation=False):
+    if mutation and request.headers.get("x-requested-with") != "SQL-Insight-Workbench":
+        raise HTTPException(status_code=403, detail="反馈请求未通过来源校验")
+    runtime = get_runtime()
+    service = runtime.knowledge_service
+    if service is None:
+        raise HTTPException(status_code=503, detail="尚未启用数据库查询知识")
+    user = await runtime.agent.user_resolver.resolve_user(_request_context(request))
+    return service, user
+
+
+@router.get("/api/queries/{query_id}/feedback")
+async def query_feedback_status(query_id: str, request: Request):
+    service, user = await _knowledge_user(request)
+    try:
+        return await asyncio.to_thread(service.feedback_status, query_id, user.id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/api/queries/{query_id}/feedback")
+async def query_feedback(query_id: str, body: QueryFeedbackRequest, request: Request, tasks: BackgroundTasks):
+    service, user = await _knowledge_user(request, mutation=True)
+    try:
+        result = await asyncio.to_thread(service.feedback, query_id, user.id, body.verdict)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if result["memory_id"] and result["index_status"] != "indexed":
+        tasks.add_task(service.sync_memory, result["memory_id"], user.id)
+    return result
+
+
+@router.post("/api/knowledge/reindex")
+async def retry_knowledge_index(request: Request, tasks: BackgroundTasks):
+    service, user = await _knowledge_user(request, mutation=True)
+    tasks.add_task(service.retry_indexes, user.id)
+    return {"status": "queued", "limit": 20}
 
 
 def _authorize_cache_sync(request: Request) -> None:

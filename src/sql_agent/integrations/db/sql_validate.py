@@ -79,7 +79,9 @@ def _parse_readonly(sql: str, dialect: str) -> exp.Select:
             raise SqlValidationError("不允许访问数据库序列")
         if isinstance(node, exp.Dot) and node.find(exp.Func) is not None:
             raise SqlValidationError("不允许调用数据库包或带命名空间的函数")
-        if isinstance(node, exp.Func):
+        # SQLGlot also models boolean connectors / EXISTS as Func subclasses.
+        # Their children are still walked and validated; they are not UDF calls.
+        if isinstance(node, exp.Func) and not isinstance(node, (exp.And, exp.Or, exp.Exists)):
             name = node.name.upper() if isinstance(node, exp.Anonymous) else node.sql_name()
             if name not in _READ_FUNCTIONS:
                 raise SqlValidationError(f"不允许调用未审核的 SQL 函数：{name}")

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 interface RowDetailModalProps {
   row: Record<string, unknown> | null;
@@ -7,16 +8,16 @@ interface RowDetailModalProps {
 }
 
 export function RowDetailModal({ row, columns, onClose }: RowDetailModalProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
     if (!row) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [row, onClose]);
+  }, [row]);
 
   if (!row) return null;
 
@@ -26,33 +27,50 @@ export function RowDetailModal({ row, columns, onClose }: RowDetailModalProps) {
     return String(value);
   };
 
-  return (
-    <div className="modal-overlay" onClick={onClose} role="presentation">
-      <div
-        ref={dialogRef}
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="row-detail-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal__header">
-          <h3 id="row-detail-title" className="modal__title">
-            行详情
-          </h3>
-          <button type="button" className="modal__close" onClick={onClose} aria-label="关闭">
-            ×
-          </button>
-        </div>
-        <dl className="modal__fields">
-          {columns.map((col) => (
-            <div key={col} className="modal__field">
-              <dt className="modal__label">{col}</dt>
-              <dd className="modal__value">{formatValue(row[col])}</dd>
-            </div>
-          ))}
-        </dl>
+  return createPortal(
+    <dialog
+      ref={dialogRef}
+      className="modal"
+      aria-modal="true"
+      aria-labelledby="row-detail-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      onClick={(e) => {
+        if (e.target !== e.currentTarget) return;
+        const bounds = e.currentTarget.getBoundingClientRect();
+        if (
+          e.clientX < bounds.left ||
+          e.clientX > bounds.right ||
+          e.clientY < bounds.top ||
+          e.clientY > bounds.bottom
+        )
+          onClose();
+      }}
+    >
+      <div className="modal__header">
+        <h3 id="row-detail-title" className="modal__title">
+          行详情
+        </h3>
+        <button
+          type="button"
+          className="modal__close"
+          onClick={onClose}
+          aria-label="关闭"
+        >
+          ×
+        </button>
       </div>
-    </div>
+      <dl className="modal__fields">
+        {columns.map((col) => (
+          <div key={col} className="modal__field">
+            <dt className="modal__label">{col}</dt>
+            <dd className="modal__value">{formatValue(row[col])}</dd>
+          </div>
+        ))}
+      </dl>
+    </dialog>,
+    document.body,
   );
 }

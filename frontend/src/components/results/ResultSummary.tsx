@@ -19,7 +19,9 @@ export function ResultSummary({
             ? "正在核对字段与数值，并整理最终分析结论。"
             : "结果可在下方数据表中查看。"}
         </p>
-        {loading && <span className="result-summary__loader" aria-hidden="true" />}
+        {loading && (
+          <span className="result-summary__loader" aria-hidden="true" />
+        )}
       </section>
     );
   }

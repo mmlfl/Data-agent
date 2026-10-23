@@ -1,7 +1,14 @@
-import { useCallback, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { streamChat } from "../api/chat";
 import { chatReducer, createInitialChatState } from "../state/chatReducer";
-import type { AgentEvent, ChatMessage } from "../types";
+import type { AgentEvent, ChatMessage, ChatState } from "../types";
+
+interface ConversationSnapshot {
+  id: string;
+  title: string;
+  state: ChatState;
+  input: string;
+}
 
 function uid() {
   return crypto.randomUUID();
@@ -14,9 +21,43 @@ export function useChat(conversationId: string) {
     createInitialChatState,
   );
   const [input, setInput] = useState("");
+  const [history, setHistory] = useState<ConversationSnapshot[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const activeAssistantRef = useRef<string | null>(null);
   const loading = state.phase === "streaming" || state.phase === "summarizing";
+
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
+
+  const switchConversation = useCallback(
+    (id?: string) => {
+      if (loading || id === state.conversationId) return;
+      const target = id ? history.find((item) => item.id === id) : undefined;
+      if (id && !target) return;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      activeAssistantRef.current = null;
+      const title = state.messages.find(
+        (message) => message.role === "user",
+      )?.content;
+      setHistory((previous) => [
+        ...(title ? [{ id: state.conversationId, title, state, input }] : []),
+        ...previous.filter(
+          (item) => item.id !== state.conversationId && item.id !== id,
+        ),
+      ]);
+      dispatch({
+        type: "restore",
+        state: target?.state ?? createInitialChatState(uid()),
+      });
+      setInput(target?.input ?? "");
+    },
+    [history, input, loading, state],
+  );
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
@@ -52,15 +93,21 @@ export function useChat(conversationId: string) {
       activeAssistantRef.current = assistantId;
 
       abortRef.current?.abort();
-      abortRef.current = new AbortController();
+      const controller = new AbortController();
+      abortRef.current = controller;
 
       try {
         await streamChat({
           message: text,
           conversationId: state.conversationId,
-          signal: abortRef.current.signal,
+          signal: controller.signal,
           onEvent: (event: AgentEvent) => {
-            if (event.metadata?.input_rejected === true && activeAssistantRef.current === assistantId) {
+            if (abortRef.current !== controller || controller.signal.aborted)
+              return;
+            if (
+              event.metadata?.input_rejected === true &&
+              activeAssistantRef.current === assistantId
+            ) {
               setInput((current) => current || text);
             }
             dispatch({
@@ -72,6 +119,7 @@ export function useChat(conversationId: string) {
           },
         });
       } catch (e) {
+        if (abortRef.current !== controller) return;
         if ((e as Error).name === "AbortError") return;
         const msg = (e as Error).message;
         dispatch({
@@ -80,7 +128,8 @@ export function useChat(conversationId: string) {
           message: `请求未完成：${msg}。请确认后端已在 8000 端口运行。`,
         });
       } finally {
-        dispatch({ type: "stream_finished", assistantId });
+        if (abortRef.current === controller)
+          dispatch({ type: "stream_finished", assistantId });
         if (activeAssistantRef.current === assistantId) {
           activeAssistantRef.current = null;
         }
@@ -94,7 +143,7 @@ export function useChat(conversationId: string) {
   }, []);
 
   const activeResult = state.activeResultId
-    ? state.results[state.activeResultId] ?? null
+    ? (state.results[state.activeResultId] ?? null)
     : null;
 
   return {
@@ -106,5 +155,19 @@ export function useChat(conversationId: string) {
     send,
     cancel,
     setActiveResult,
+    switchConversation,
+    conversations: [
+      ...(state.messages.length
+        ? [
+            {
+              id: state.conversationId,
+              title:
+                state.messages.find((message) => message.role === "user")
+                  ?.content ?? "新的分析",
+            },
+          ]
+        : []),
+      ...history.map(({ id, title }) => ({ id, title })),
+    ],
   };
 }

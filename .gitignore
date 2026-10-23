@@ -77,6 +77,7 @@ pnpm-debug.log*
 
 # SQLite schema cache (per dialect: metadata_dm.db / metadata_mysql.db)
 **/metadata_*.db
+data/sql_agent_knowledge.db*
 
 # ── Local docs / learning notes（不提交 GitHub）──────────
 docs/

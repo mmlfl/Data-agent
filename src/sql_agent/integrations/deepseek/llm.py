@@ -77,6 +77,7 @@ class DeepSeekLlmService(LlmService):
 
         return LlmResponse(
             content=content,
+            reasoning_content=getattr(choice.message, "reasoning_content", None),
             tool_calls=tool_calls or None,
             finish_reason=getattr(choice, "finish_reason", None),
             usage=usage or None,
@@ -103,6 +104,9 @@ class DeepSeekLlmService(LlmService):
                 continue
 
             content_piece: Optional[str] = getattr(delta, "content", None)
+            reasoning_piece: Optional[str] = getattr(delta, "reasoning_content", None)
+            if reasoning_piece:
+                yield LlmStreamChunk(reasoning_content=reasoning_piece)
             if content_piece:
                 yield LlmStreamChunk(content=content_piece)
 
@@ -183,6 +187,10 @@ class DeepSeekLlmService(LlmService):
                     }
                     for tc in msg.tool_calls
                 ]
+            if msg.role == "assistant" and request.tools:
+                # Thinking + tools requires this field on every assistant turn,
+                # including turns without calls. Synthetic/older turns have no data.
+                item["reasoning_content"] = msg.reasoning_content or ""
             messages.append(item)
 
         payload: Dict[str, Any] = {

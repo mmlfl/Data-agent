@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 import traceback
 import uuid
 from typing import Any, AsyncGenerator, List, Optional
@@ -38,7 +40,7 @@ from sql_agent.core.storage import (
     MemoryConversationStore,
     Message,
 )
-from sql_agent.core.tool import ToolCall, ToolContext, ToolSchema
+from sql_agent.core.tool import ToolCall, ToolContext, ToolSchema, ToolResult
 from sql_agent.core.user import RequestContext, User, UserResolver
 from sql_agent.core.workflow import NoOpWorkflowHandler, WorkflowHandler
 
@@ -95,6 +97,7 @@ class Agent:
         error_recovery_strategy: Optional[ErrorRecoveryStrategy] = None,
         observability_provider: Optional[ObservabilityProvider] = None,
         audit_logger: Optional[AuditLogger] = None,
+        knowledge_service: Any = None,
     ) -> None:
         self.llm_service = llm_service
         self.tool_registry = tool_registry
@@ -114,6 +117,7 @@ class Agent:
         self.error_recovery_strategy = error_recovery_strategy
         self.observability_provider = observability_provider
         self.audit_logger = audit_logger
+        self.knowledge_service = knowledge_service
 
         if self.audit_logger and self.config.audit_config.enabled:
             self.tool_registry.audit_logger = self.audit_logger
@@ -236,11 +240,18 @@ class Agent:
             tool_context = await enricher.enrich_context(tool_context)
         tool_context.metadata["context_window_tokens"] = context_window
         tool_context.metadata["context_safety_tokens"] = safety_tokens
+        deadline = time.monotonic() + self.config.max_request_seconds
+        tool_context.metadata.update(request_deadline=deadline,
+                                     max_sql_attempts=self.config.max_sql_attempts,
+                                     max_sql_repairs=self.config.max_sql_repairs)
 
         tool_iterations = 0
         last_sql_result: Optional[tuple[str, DataFrameComponent]] = None
+        query_ids: dict[str, str] = {}
+        query_questions: dict[str, str] = {}
         finalize_draft: Optional[str] = None
         context_overflow_stopped = False
+        request_budget_stopped = False
         request_message_count = len(conversation.messages)
         input_accepted = False
         truncated_tool_ids: set[str] = set()
@@ -250,6 +261,11 @@ class Agent:
             )
             request = await self._apply_middlewares_before(request)
             context_tokens = estimate_request_tokens(request)
+            if time.monotonic() >= deadline:
+                request_budget_stopped = True
+                yield AgentEvent(type="error", content="本轮处理时间预算已耗尽，请缩小问题范围或补充业务条件后重试。",
+                                 metadata={"error_code": "request_budget_exhausted"})
+                break
             budget = min(input_budget, context_window - safety_tokens - (request.max_tokens or 0))
             if not input_accepted:
                 if context_tokens > budget:
@@ -310,6 +326,8 @@ class Agent:
                 force_refresh = False
                 if context_tokens <= budget:
                     conversation = candidate
+                    tool_context.metadata.pop("known_schema", None)
+                    tool_context.metadata.pop("schema_searches", None)
                     context_refreshed = refreshed = True
                     context_refresh_count += 1
                     if self.config.auto_save_conversations:
@@ -341,6 +359,9 @@ class Agent:
             # Explicitly bound generation to the reserved output budget.
             if request.max_tokens is None:
                 request.max_tokens = self.config.max_tokens or self.config.context_output_reserve_tokens
+            tool_context.metadata["visible_tool_ids"] = {
+                msg.tool_call_id for msg in request.messages if msg.role == "tool"
+            }
             request_message_count = len(conversation.messages)
             streamed_text = False
             buffer_response_text = (
@@ -350,22 +371,27 @@ class Agent:
             try:
                 if self.config.stream_responses:
                     content_parts: List[str] = []
+                    reasoning_parts: List[str] = []
                     streamed_chars = 0
                     reported_chars = 0
                     pending_usage_text: List[str] = []
                     generated_tokens = 0
                     tool_calls = None
                     finish_reason = None
-                    async for chunk in self.llm_service.stream_request(request):
+                    async for chunk in self._stream_with_deadline(request, deadline):
+                        if chunk.reasoning_content:
+                            reasoning_parts.append(chunk.reasoning_content)
                         if chunk.content:
                             content_parts.append(chunk.content)
-                            streamed_chars += len(chunk.content)
-                            pending_usage_text.append(chunk.content)
                             streamed_text = True
                             if not buffer_response_text:
                                 yield AgentEvent(
                                     type="text_delta", content=chunk.content
                                 )
+                        protocol_text = (chunk.reasoning_content or "") + (chunk.content or "")
+                        if protocol_text:
+                            streamed_chars += len(protocol_text)
+                            pending_usage_text.append(protocol_text)
                             if streamed_chars - reported_chars >= 512:
                                 reported_chars = streamed_chars
                                 generated_tokens += estimate_text_tokens("".join(pending_usage_text))
@@ -380,12 +406,19 @@ class Agent:
                             finish_reason = chunk.finish_reason
                     response = LlmResponse(
                         content="".join(content_parts) or None,
+                        reasoning_content="".join(reasoning_parts) or None,
                         tool_calls=tool_calls,
                         finish_reason=finish_reason,
                     )
                 else:
-                    response = await self.llm_service.send_request(request)
+                    response = await asyncio.wait_for(self.llm_service.send_request(request),
+                                                      max(0.001, deadline - time.monotonic()))
             except Exception as e:
+                if isinstance(e, TimeoutError) and time.monotonic() >= deadline:
+                    request_budget_stopped = True
+                    yield AgentEvent(type="error", content="本轮处理时间预算已耗尽，已停止等待模型响应。",
+                                     metadata={"error_code": "request_budget_exhausted"})
+                    break
                 if is_context_overflow(e) and not streamed_text and provider_retries < 2:
                     provider_retries += 1
                     # The provider tokenizer/limit can differ from our estimate.
@@ -417,6 +450,7 @@ class Agent:
                         role="assistant",
                         content=response.content or "",
                         tool_calls=response.tool_calls,
+                        reasoning_content=response.reasoning_content,
                     )
                 )
                 if (
@@ -427,6 +461,7 @@ class Agent:
                     yield AgentEvent(type="text", content=response.content)
 
                 for tool_call in response.tool_calls or []:
+                    tool_context.metadata["tool_call_id"] = tool_call.id
                     yield AgentEvent(
                         type="tool_start",
                         content=f"调用工具: {tool_call.name}",
@@ -444,7 +479,26 @@ class Agent:
                         for hook in self.lifecycle_hooks:
                             await hook.before_tool(tool, tool_context)
 
-                    result = await self.tool_registry.execute(tool_call, tool_context)
+                    if time.monotonic() >= deadline:
+                        request_budget_stopped = True
+                        result = ToolResult(success=False, result_for_llm="本轮时间预算耗尽，未执行该工具，请结束回答。",
+                                            user_error="本轮时间预算已耗尽。", metadata={"error_code": "request_budget_exhausted"})
+                    else:
+                        result = await self.tool_registry.execute(tool_call, tool_context)
+
+                    if tool_call.name == "run_sql" and self.knowledge_service is not None:
+                        query_ids.pop(tool_call.id, None)
+                        query_questions.pop(tool_call.id, None)
+                        try:
+                            query_id = await asyncio.to_thread(
+                                self.knowledge_service.record_execution,
+                                working_message, tool_context, tool_call, result,
+                            )
+                            query_ids[tool_call.id] = query_id
+                            query_questions[tool_call.id] = tool_call.arguments.get("question") or working_message
+                            result.metadata["query_id"] = query_id
+                        except Exception as error:
+                            logger.warning("Query provenance unavailable (%s)", type(error).__name__)
 
                     for hook in self.lifecycle_hooks:
                         maybe = await hook.after_tool(result)
@@ -468,6 +522,8 @@ class Agent:
                         estimate_text_tokens(TRUNCATION_NOTICE), input_budget // 2
                     ))
                     if preview != result.result_for_llm:
+                        tool_context.metadata.pop("known_schema", None)
+                        tool_context.metadata.pop("schema_searches", None)
                         truncated_tool_ids.add(tool_call.id)
                         yield AgentEvent(type="status", content="context_tool_truncated", metadata={
                             "message": "工具返回文本过大，已限制发给模型的内容并标记不完整；查询结果面板保留。",
@@ -496,6 +552,7 @@ class Agent:
                             tool_call_id=tool_call.id,
                         )
                     )
+                    tool_context.metadata["visible_tool_ids"].add(tool_call.id)
 
             else:
                 if (
@@ -503,11 +560,19 @@ class Agent:
                     and last_sql_result is not None
                 ):
                     finalize_draft = response.content
-                elif response.content:
+                    if response.reasoning_content is not None:
+                        # Keep the original model turn for the next tools request;
+                        # finalization emits its separate, public result below.
+                        conversation.add_message(Message(
+                            role="assistant", content=response.content or "",
+                            reasoning_content=response.reasoning_content,
+                        ))
+                elif response.content or response.reasoning_content is not None:
                     conversation.add_message(
-                        Message(role="assistant", content=response.content)
+                        Message(role="assistant", content=response.content or "",
+                                reasoning_content=response.reasoning_content)
                     )
-                    if not streamed_text:
+                    if response.content and not streamed_text:
                         yield AgentEvent(type="text", content=response.content)
                 break
 
@@ -548,7 +613,8 @@ class Agent:
                     "truncated": dataframe.truncated,
                     "sample_strategy": "systematic",
                     "draft": finalize_draft,
-                    "partial": reached_tool_limit,
+                    "partial": reached_tool_limit or request_budget_stopped,
+                    "partial_reason": "time_budget" if request_budget_stopped else "tool_limit",
                 },
             )
 
@@ -620,11 +686,25 @@ class Agent:
                 )
                 yield AgentEvent(type="text", content=fallback_text)
 
+        if not self.config.auto_finalize_results and last_sql_result is not None and not context_overflow_stopped:
+            final_source_tool_call_id = last_sql_result[0]
+
         if self.config.auto_save_conversations:
             await self.conversation_store.update_conversation(conversation)
 
         for hook in self.lifecycle_hooks:
             await hook.after_message(conversation)
+
+        final_query_id = None
+        if self.knowledge_service is not None:
+            if (not context_overflow_stopped and not reached_tool_limit and not request_budget_stopped
+                    and time.monotonic() < deadline and final_source_tool_call_id):
+                final_query_id = query_ids.get(final_source_tool_call_id)
+            try:
+                await asyncio.to_thread(self.knowledge_service.complete_request, user.id, request_id, final_query_id)
+            except Exception as error:
+                final_query_id = None
+                logger.warning("Final query provenance unavailable (%s)", type(error).__name__)
 
         # Do not rerun request middleware merely to update the UI counter.
         if not context_overflow_stopped:
@@ -639,17 +719,25 @@ class Agent:
                 "tool_iterations": tool_iterations,
                 "finalized": finalized,
                 "source_tool_call_id": final_source_tool_call_id,
+                "query_id": final_query_id,
+                "confirmed_question": query_questions.get(final_source_tool_call_id) if final_query_id else None,
                 "context_tokens": context_tokens,
                 "context_window_tokens": context_window,
                 "context_refreshed": context_refreshed,
                 "context_overflow_stopped": context_overflow_stopped,
                 "context_refresh_count": context_refresh_count,
                 "context_tokens_estimated": True,
+                "request_budget_stopped": request_budget_stopped or time.monotonic() >= deadline,
             },
         )
 
     async def get_available_tools(self, user: User) -> List[ToolSchema]:
         return await self.tool_registry.get_schemas(user)
+
+    async def _stream_with_deadline(self, request, deadline):
+        async with asyncio.timeout(max(0.001, deadline - time.monotonic())):
+            async for chunk in self.llm_service.stream_request(request):
+                yield chunk
 
     async def _build_llm_request(
         self,
@@ -668,6 +756,7 @@ class Agent:
                 content=msg.content,
                 tool_calls=msg.tool_calls,
                 tool_call_id=msg.tool_call_id,
+                reasoning_content=msg.reasoning_content,
             )
             for msg in filtered
         ]

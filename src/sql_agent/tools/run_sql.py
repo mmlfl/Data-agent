@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 import logging
 import math
 from datetime import date, datetime
@@ -15,6 +17,8 @@ from sql_agent.components import DataColumn, DataFrameComponent
 from sql_agent.core.tool.base import Tool
 from sql_agent.core.tool.models import ToolContext, ToolResult
 from sql_agent.integrations.db.sql_runner_pool import SqlRunnerPool
+from sql_agent.integrations.db.sql_errors import classify_sql_error
+from sql_agent.retrieval.query_review import review_query
 from sql_agent.integrations.db.sql_validate import (
     MAX_QUERY_ROWS,
     SqlValidationError,
@@ -202,105 +206,85 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
             "前端展示限额内结果，你收到少量样本；达到上限时不能声称返回全部数据。"
             "请用 WHERE（含时间窗口）缩小范围，统计总量应使用 COUNT/SUM 等聚合。"
             "禁止写操作、锁定、变量赋值、危险函数和未审核的自定义函数。"
-            "写 SQL 前应先 describe_table 确认字段。"
+            "先确认字段；search_schema/find_join_path 已给出当前完整结构时可复用，不必重复 describe。"
+            "多表聚合须提供 query_plan 明确结果粒度、指标、关联依据与防重复策略；"
+            "仅筛选用 EXISTS，需要汇总先聚合再关联。错误后按 hint 修正，不要重复相同 SQL。"
         )
 
     def get_args_schema(self) -> Type[RunSqlToolArgs]:
         return RunSqlToolArgs
 
     async def execute(self, context: ToolContext, args: RunSqlToolArgs) -> ToolResult:
-        # Reject before borrowing a connection; runners validate again for direct callers.
-        try:
-            prepared_sql = prepare_readonly_sql(
-                args.sql, dialect=self._dialect, max_rows=self._max_result_rows
-            )
-        except SqlValidationError as error:
-            msg = str(error)
+        budget = context.metadata.setdefault("sql_budget", {"calls": 0, "repairs": 0, "failed_sql": set()})
+        max_calls = context.metadata.get("max_sql_attempts", 6)
+        max_repairs = context.metadata.get("max_sql_repairs", 3)
+        deadline = context.metadata.get("request_deadline")
+        started = time.monotonic()
+
+        def failure(code, hint, *, diagnostic=None, repairable=True, count=True):
+            if count:
+                budget["repairs"] += 1
             return ToolResult(
-                success=False,
-                result_for_llm=msg,
-                error=msg,
-                user_error=msg,
-                metadata={"sql": args.sql},
+                success=False, error=code,
+                result_for_llm=json.dumps({"error_code": code, "repairable": repairable,
+                                          "hint": hint, "diagnostic": (diagnostic or "")[:2000],
+                                          "remaining_sql_calls": max(0, max_calls - budget["calls"]),
+                                          "remaining_repairs": max(0, max_repairs - budget["repairs"])}, ensure_ascii=False),
+                user_error=hint,
+                metadata={"sql": args.sql, "error_code": code, "repairable": repairable},
             )
 
-        last_error: Exception | None = None
+        if (budget["calls"] >= max_calls or budget["repairs"] >= max_repairs
+                or (deadline is not None and started >= deadline)):
+            return failure("sql_budget_exhausted", "本轮 SQL 次数或时间预算已耗尽，请说明未完成原因或请求补充条件。",
+                           repairable=False, count=False)
+        budget["calls"] += 1
+        try:
+            prepared_sql = prepare_readonly_sql(args.sql, dialect=self._dialect, max_rows=self._max_result_rows)
+        except SqlValidationError as error:
+            return failure("sql_validation_failed", str(error))
+        review = review_query(prepared_sql, self._dialect, args.query_plan)
+        if review:
+            return failure(review["error_code"], review["hint"], repairable=review["repairable"])
+        if prepared_sql in budget["failed_sql"]:
+            return failure("sql_unchanged_retry", "该 SQL 本轮已经失败；请依据错误修正或补查结构，不要原样重复。",
+                           count=False)
+
         for attempt in range(2):
             try:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return failure("sql_budget_exhausted", "本轮时间预算已耗尽，未再次执行 SQL。", repairable=False)
                 execution = await asyncio.to_thread(self._execute_once, prepared_sql)
                 executed_sql = execution.executed_sql or prepared_sql
-                columns = execution.columns
-                rows = execution.rows
                 component = build_result_component(
-                    columns,
-                    rows,
-                    executed_sql,
-                    query_truncated=execution.truncated,
-                    max_frontend_rows=self._max_frontend_rows,
+                    execution.columns, execution.rows, executed_sql,
+                    query_truncated=execution.truncated, max_frontend_rows=self._max_frontend_rows,
                 )
                 text = format_sql_result(
-                    columns,
-                    rows,
-                    max_rows=self._max_llm_rows,
-                    truncated=execution.truncated,
-                    ui_row_count=component.displayed_row_count,
+                    execution.columns, execution.rows, max_rows=self._max_llm_rows,
+                    truncated=execution.truncated, ui_row_count=component.displayed_row_count,
                 )
                 return ToolResult(
-                    success=True,
-                    result_for_llm=text,
-                    ui_component=component,
+                    success=True, result_for_llm=text, ui_component=component,
                     metadata={
-                        "row_count": component.row_count,
-                        "row_count_is_exact": component.row_count_is_exact,
+                        "row_count": component.row_count, "row_count_is_exact": component.row_count_is_exact,
                         "displayed_row_count": component.displayed_row_count,
                         "columns": [column.name for column in component.columns],
-                        "column_types": {
-                            column.name: column.data_type
-                            for column in component.columns
-                        },
-                        "sql": executed_sql,
-                        "requested_sql": args.sql,
-                        "truncated": component.truncated,
+                        "column_types": {column.name: column.data_type for column in component.columns},
+                        "sql": executed_sql, "requested_sql": args.sql, "truncated": component.truncated,
+                        "execution_time_ms": round((time.monotonic() - started) * 1000, 2),
+                        "execution_attempts": attempt + 1, "system_row_limit": self._max_result_rows,
+                        "query_plan": args.query_plan.model_dump() if args.query_plan else None,
                     },
                 )
-            except PermissionError as e:
-                msg = str(e) or "不安全的sql语句，拒绝执行"
-                return ToolResult(
-                    success=False,
-                    result_for_llm=msg,
-                    error=msg,
-                    user_error=msg,
-                    metadata={"sql": args.sql},
-                )
-            except Exception as e:
-                last_error = e
-                # A timed-out query must not immediately be run a second time.
-                if (
-                    isinstance(e, TimeoutError)
-                    or (e.args and e.args[0] in (3024, 1969))
-                    or any(word in str(e).lower() for word in ("timeout", "timed out", "超时"))
-                ):
-                    return ToolResult(
-                        success=False,
-                        result_for_llm="SQL 执行超时，请缩小查询范围或简化查询后重试。",
-                        user_error="查询超时，请缩小查询范围。",
-                        error="sql_query_timeout",
-                        metadata={"sql": prepared_sql, "requested_sql": args.sql,
-                                  "error_code": "sql_query_timeout"},
-                    )
-                if attempt == 0:
-                    logger.warning("SQL 执行失败，准备重试: %s", e)
+            except Exception as error:
+                classified = classify_sql_error(error, self._dialect)
+                if classified.retryable and attempt == 0:
+                    logger.warning("Temporary SQL connection failure; retrying once (%s)", type(error).__name__)
                     continue
-                logger.exception("SQL 执行重试后仍失败")
-        diagnostic = f"SQL 执行失败（已重试）: {last_error}"
-        public_message = "SQL 执行失败，请检查查询字段、条件或稍后重试。"
-        return ToolResult(
-            success=False,
-            result_for_llm=diagnostic,
-            error=diagnostic,
-            user_error=public_message,
-            metadata={"sql": args.sql, "error_code": "sql_execution_failed"},
-        )
+                budget["failed_sql"].add(prepared_sql)
+                return failure(classified.code, classified.hint, diagnostic=str(error),
+                               repairable=classified.repairable)
 
     def _execute_once(self, sql: str) -> SqlExecutionResult:
         """Run the entire blocking pool/driver operation on a worker thread."""

@@ -19,7 +19,9 @@ function formatCell(value: unknown, type: ColumnDataType): string {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "object") return JSON.stringify(value);
   if (type === "number" && typeof value === "number") {
-    return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(value);
+    return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(
+      value,
+    );
   }
   if (type === "boolean") return value ? "是" : "否";
   if (type === "datetime" && typeof value === "string") {
@@ -36,12 +38,16 @@ interface QueryResultTableProps {
 export function QueryResultTable({ data }: QueryResultTableProps) {
   const [globalFilter, setGlobalFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([]);
-  const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null);
+  const [selectedRow, setSelectedRow] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
 
   const columns = useMemo<ColumnDef<Record<string, unknown>>[]>(
     () =>
       data.columns.map((column) => ({
-        accessorKey: column.name,
+        id: column.name,
+        accessorFn: (row) => row[column.name],
         header: () => (
           <span className="result-table__column">
             <span>{column.name}</span>
@@ -77,11 +83,20 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
     getSortedRowModel: getSortedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     initialState: { pagination: { pageSize: PAGE_SIZE } },
-    globalFilterFn: "includesString",
+    globalFilterFn: (row, columnId, filter: string) => {
+      const value = row.getValue(columnId);
+      const text =
+        value == null
+          ? "null"
+          : typeof value === "object"
+            ? JSON.stringify(value)
+            : String(value);
+      return text.toLocaleLowerCase().includes(filter.toLocaleLowerCase());
+    },
   });
 
   const handleExport = () => {
-    const filtered = table.getFilteredRowModel().rows.map((r) => r.original);
+    const filtered = table.getSortedRowModel().rows.map((r) => r.original);
     exportToCsv(
       data.columns.map((column) => column.name),
       filtered,
@@ -103,10 +118,15 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
         <div className="result-table__meta">
           共 {data.row_count} 行
           {data.truncated && ` · 当前展示前 ${data.displayed_row_count} 行`}
-          {globalFilter && ` · 筛选后 ${table.getFilteredRowModel().rows.length} 行`}
+          {globalFilter &&
+            ` · 筛选后 ${table.getFilteredRowModel().rows.length} 行`}
         </div>
-        <button type="button" className="result-table__export" onClick={handleExport}>
-          导出当前展示
+        <button
+          type="button"
+          className="result-table__export"
+          onClick={handleExport}
+        >
+          导出 CSV
         </button>
       </div>
 
@@ -122,20 +142,51 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
                     {hg.headers.map((header) => (
                       <th
                         key={header.id}
-                        onClick={header.column.getToggleSortingHandler()}
-                        className={header.column.getCanSort() ? "result-table__th--sortable" : ""}
+                        aria-sort={
+                          header.column.getIsSorted() === "asc"
+                            ? "ascending"
+                            : header.column.getIsSorted() === "desc"
+                              ? "descending"
+                              : "none"
+                        }
+                        className={
+                          header.column.getCanSort()
+                            ? "result-table__th--sortable"
+                            : ""
+                        }
                       >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        {{
-                          asc: " ↑",
-                          desc: " ↓",
-                        }[header.column.getIsSorted() as string] ?? null}
+                        <button
+                          type="button"
+                          className="result-table__sort"
+                          onClick={header.column.getToggleSortingHandler()}
+                          disabled={!header.column.getCanSort()}
+                        >
+                          {flexRender(
+                            header.column.columnDef.header,
+                            header.getContext(),
+                          )}
+                          <span aria-hidden="true">
+                            {{ asc: "↑", desc: "↓" }[
+                              header.column.getIsSorted() as string
+                            ] ?? "↕"}
+                          </span>
+                        </button>
                       </th>
                     ))}
                   </tr>
                 ))}
               </thead>
               <tbody>
+                {table.getRowModel().rows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={data.columns.length}
+                      className="result-table__no-match"
+                    >
+                      没有匹配的记录，请尝试其他搜索词。
+                    </td>
+                  </tr>
+                )}
                 {table.getRowModel().rows.map((row) => (
                   <tr
                     key={row.id}
@@ -148,11 +199,15 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
                         setSelectedRow(row.original);
                       }
                     }}
-                    role="button"
                     aria-label="查看行详情"
                   >
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+                      <td key={cell.id}>
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext(),
+                        )}
+                      </td>
                     ))}
                   </tr>
                 ))}
@@ -169,7 +224,8 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
               上一页
             </button>
             <span>
-              第 {table.getState().pagination.pageIndex + 1} / {table.getPageCount()} 页
+              第 {table.getState().pagination.pageIndex + 1} /{" "}
+              {Math.max(1, table.getPageCount())} 页
             </span>
             <button
               type="button"

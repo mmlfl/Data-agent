@@ -24,6 +24,8 @@ class Message(BaseModel):
     tool_call_id: Optional[str] = Field(
         default=None, description="ID if this is a tool response"
     )
+    # Opaque provider protocol data; never publish it as answer text or an SSE event.
+    reasoning_content: Optional[str] = Field(default=None, repr=False)
 
 
 class Conversation(BaseModel):

@@ -1,108 +1,89 @@
 import type { HealthResponse } from "../types";
 import type { Theme } from "../hooks/useTheme";
+import { Icon } from "./Icon";
+import { BrandMark } from "./BrandMark";
+
 interface HeaderProps {
+  page: "analysis" | "metadata";
   health: HealthResponse | null;
   healthError: string | null;
+  checking: boolean;
+  menuOpen: boolean;
   theme: Theme;
   onToggleTheme: () => void;
-  syncing: boolean;
-  syncMessage: string | null;
-  onSyncCache: () => void;
-}
-
-function cacheLabel(health: HealthResponse): string {
-  if (!health.with_db) return "未启用";
-  const n = health.cache_table_count ?? 0;
-  const status = health.cache_status;
-  if (status === "empty" || n === 0) return "缓存为空";
-  if (status === "synced" || status === "cached" || status === "ready") {
-    return `${n} 张表`;
-  }
-  if (status) return status;
-  return n > 0 ? `${n} 张表` : "待检查";
+  onRefresh: () => void;
+  onMenu: () => void;
 }
 
 export function Header({
+  page,
   health,
   healthError,
+  checking,
+  menuOpen,
   theme,
   onToggleTheme,
-  syncing,
-  syncMessage,
-  onSyncCache,
+  onRefresh,
+  onMenu,
 }: HeaderProps) {
-  const canSync = !!health?.with_db && !healthError;
-  const serviceState = healthError
-    ? "不可用"
-    : health
-      ? "在线"
-      : "检查中";
-  const databaseState = health
-    ? health.with_db
-      ? `${health.db_dialect.toUpperCase()} 已启用`
-      : "未启用"
-    : "—";
-
   return (
-    <header className="topbar">
-      <div className="brand">
-        <span className="brand__index">SQL / 01</span>
-        <div>
-          <h1>Insight Workbench</h1>
-          <p>自然语言驱动的可验证数据分析</p>
-        </div>
-      </div>
-
-      <div className="topbar__system" role="status">
-        <div className={`system-state${healthError ? " system-state--error" : ""}`}>
-          <span className="system-state__label">服务</span>
-          <strong>
-            <i
-              className={`system-state__dot${
-                health && !healthError ? " system-state__dot--ok" : ""
-              }`}
-            />
-            {serviceState}
-          </strong>
-        </div>
-        <div className="system-state">
-          <span className="system-state__label">数据库</span>
-          <strong>{databaseState}</strong>
-        </div>
-        <div className="system-state">
-          <span className="system-state__label">结构缓存</span>
-          <strong>{health ? cacheLabel(health) : "—"}</strong>
-        </div>
-        <div className="system-state system-state--compact">
-          <span className="system-state__label">能力</span>
-          <strong>{health ? `${health.tools.length} 项` : "—"}</strong>
-        </div>
-      </div>
-
-      <div className="topbar__actions">
+    <header className="workspace-header">
+      <div className="workspace-header__location">
         <button
           type="button"
-          className="topbar__button"
+          className="icon-button mobile-menu"
+          aria-label="打开导航"
+          aria-controls="workspace-navigation"
+          aria-expanded={menuOpen}
+          onClick={onMenu}
+        >
+          <Icon name="menu" />
+        </button>
+        <span className="workspace-header__root">
+          <Icon name="home" size={17} />
+          工作空间
+        </span>
+        <Icon name="chevron" size={13} />
+        <strong>{page === "analysis" ? "分析工作台" : "元数据管理"}</strong>
+      </div>
+      <div className="workspace-header__actions">
+        <button
+          type="button"
+          className={`connection-pill ${healthError ? "connection-pill--error" : health ? "connection-pill--online" : ""}`}
+          onClick={onRefresh}
+          disabled={checking}
+          title="重新检查服务连接"
+        >
+          <span className={`status-dot ${checking ? "is-pulsing" : ""}`} />
+          {checking
+            ? "正在连接"
+            : healthError
+              ? "服务未连接"
+              : health
+                ? health.with_db
+                  ? "数据源已启用"
+                  : "服务已连接"
+                : "等待连接"}
+          <Icon
+            name="refresh"
+            size={12}
+            className={checking ? "is-spinning" : ""}
+          />
+        </button>
+        <span className="header-divider" />
+        <button
+          type="button"
+          className="icon-button"
           onClick={onToggleTheme}
           aria-label={theme === "dark" ? "切换为浅色主题" : "切换为暗色主题"}
+          title={theme === "dark" ? "浅色主题" : "深色主题"}
         >
-          <span aria-hidden="true">{theme === "dark" ? "☼" : "◐"}</span>
-          {theme === "dark" ? "浅色" : "暗色"}
+          <Icon name={theme === "dark" ? "sun" : "moon"} size={18} />
         </button>
-        <button
-          type="button"
-          className="topbar__button topbar__button--primary"
-          onClick={onSyncCache}
-          disabled={!canSync || syncing}
-          title="从数据库重新拉取表结构到本地 SQLite 缓存"
-        >
-          <span className={syncing ? "sync-icon sync-icon--active" : "sync-icon"} aria-hidden="true">↻</span>
-          {syncing ? "同步中" : "同步缓存"}
-        </button>
+        <span className="workspace-avatar" title="本地工作空间">
+          <BrandMark size={18} />
+        </span>
       </div>
-      {syncMessage && (
-        <div className="topbar__notice" role="status">{syncMessage}</div>
-      )}
     </header>
   );
 }

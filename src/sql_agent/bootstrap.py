@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
@@ -30,6 +31,7 @@ class RuntimeBundle:
     agent: Agent
     schema_cache: Optional[SchemaCache]
     cache_info: Optional[dict]
+    knowledge_service: object | None = None
 
 
 def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
@@ -42,6 +44,7 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
     schema_cache: Optional[SchemaCache] = None
     cache_info: Optional[dict] = None
     settings: Optional[DbSettings] = None
+    knowledge_service = None
 
     if with_db:
         settings = DbSettings()
@@ -64,7 +67,6 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
                 "检查 DB 账号是否有业务表（达梦 OWNER=USER），或手动 POST /api/cache/sync"
             )
         registry.register(ListTablesTool(schema_cache), access_groups=["user"])
-        registry.register(DescribeTableTool(schema_cache), access_groups=["user"])
         registry.register(
             RunSqlTool(
                 pool,
@@ -79,6 +81,28 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
             access_groups=["user"],
             expose_to_llm=False,
         )
+        from sql_agent.capabilities.knoledge_store.experience_models import stable_hash
+        from sql_agent.integrations.db.experience_store import ExperienceStore
+        from sql_agent.integrations.milvus.memory_store import KnowledgeVectors
+        from sql_agent.integrations.milvus.settings import MilvusSettings
+        from sql_agent.services.knowledge_service import KnowledgeService
+        from sql_agent.tools.knowledge import KnowledgeTool
+
+        rag_settings = MilvusSettings()
+        database_id = rag_settings.rag_database_id.strip() or "db:" + stable_hash(
+            [settings.db_dialect, settings.db_host, settings.db_port, settings.db_database, settings.db_user]
+        )[:32]
+        knowledge_path = Path(rag_settings.knowledge_db_path)
+        if not knowledge_path.is_absolute():
+            knowledge_path = Path(__file__).resolve().parents[2] / knowledge_path
+        knowledge_service = KnowledgeService(
+            ExperienceStore(knowledge_path), cache_path=schema_cache.db_path,
+            database_id=database_id, tenant_id=rag_settings.rag_tenant_id,
+            dialect=settings.db_dialect, vectors=KnowledgeVectors(rag_settings),
+        )
+        registry.register(DescribeTableTool(schema_cache, catalog_provider=knowledge_service.catalog), access_groups=["user"])
+        for name in ("search_schema", "search_sql_memory", "find_join_path"):
+            registry.register(KnowledgeTool(knowledge_service, name), access_groups=["user"])
 
     dialect = settings.db_dialect if settings else os.getenv("DB_DIALECT", "dm")
     max_result_rows = (
@@ -96,6 +120,10 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
             max_result_rows=max_result_rows,
         ),
         config=AgentConfig(
+            max_tool_iterations=int(os.getenv("MAX_TOOL_ITERATIONS", "10")),
+            max_sql_attempts=int(os.getenv("MAX_SQL_ATTEMPTS", "6")),
+            max_sql_repairs=int(os.getenv("MAX_SQL_REPAIRS", "3")),
+            max_request_seconds=float(os.getenv("MAX_REQUEST_SECONDS", "180")),
             stream_responses=os.getenv("STREAM_RESPONSES", "true").lower() == "true",
             auto_finalize_results=os.getenv(
                 "AUTO_FINALIZE_RESULTS", "true"
@@ -104,8 +132,9 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
             max_finalize_rows=int(os.getenv("MAX_FINALIZE_ROWS", "20")),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
         ),
+        knowledge_service=knowledge_service,
     )
-    return RuntimeBundle(agent=agent, schema_cache=schema_cache, cache_info=cache_info)
+    return RuntimeBundle(agent=agent, schema_cache=schema_cache, cache_info=cache_info, knowledge_service=knowledge_service)
 
 
 def build_agent(*, with_db: bool | None = None) -> Agent:

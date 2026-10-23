@@ -32,7 +32,13 @@ export function ContextMeter({ usage }: ContextMeterProps) {
   const dashOffset = circumference * (1 - ratio);
 
   const tone =
-    ratio >= 0.92 ? "critical" : ratio >= 0.75 ? "warn" : ratio > 0 ? "ok" : "idle";
+    ratio >= 0.92
+      ? "critical"
+      : ratio >= 0.75
+        ? "warn"
+        : ratio > 0
+          ? "ok"
+          : "idle";
 
   return (
     <div

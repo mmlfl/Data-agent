@@ -9,6 +9,7 @@ import type {
 import { isUiComponent } from "../types/events";
 
 export type ChatAction =
+  | { type: "restore"; state: ChatState }
   | {
       type: "start_turn";
       userMessage: ChatMessage;
@@ -46,7 +47,9 @@ function updateMessage(
   id: string,
   update: (message: ChatMessage) => ChatMessage,
 ): ChatMessage[] {
-  return messages.map((message) => (message.id === id ? update(message) : message));
+  return messages.map((message) =>
+    message.id === id ? update(message) : message,
+  );
 }
 
 function phaseAfterFinish(current: TurnPhase): TurnPhase {
@@ -54,7 +57,8 @@ function phaseAfterFinish(current: TurnPhase): TurnPhase {
 }
 
 function asArguments(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   return value as Record<string, unknown>;
 }
 
@@ -75,10 +79,16 @@ function findPendingFinal(
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
+    case "restore":
+      return action.state;
     case "start_turn":
       return {
         ...state,
-        messages: [...state.messages, action.userMessage, action.assistantMessage],
+        messages: [
+          ...state.messages,
+          action.userMessage,
+          action.assistantMessage,
+        ],
         activeAssistantId: action.assistantMessage.id,
         phase: "streaming",
         contextNotice: null,
@@ -90,11 +100,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         : state;
 
     case "request_error": {
-      const messages = updateMessage(state.messages, action.assistantId, (message) => ({
-        ...message,
-        phase: "error",
-        error: message.error ?? action.message,
-      }));
+      const messages = updateMessage(
+        state.messages,
+        action.assistantId,
+        (message) => ({
+          ...message,
+          phase: "error",
+          error: message.error ?? action.message,
+        }),
+      );
       const isActive = state.activeAssistantId === action.assistantId;
       return {
         ...state,
@@ -105,11 +119,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
 
     case "cancel": {
-      const messages = updateMessage(state.messages, action.assistantId, (message) => ({
-        ...message,
-        phase: "cancelled",
-        statusText: "已停止生成",
-      }));
+      const messages = updateMessage(
+        state.messages,
+        action.assistantId,
+        (message) => ({
+          ...message,
+          phase: "cancelled",
+          statusText: "已停止生成",
+        }),
+      );
       const isActive = state.activeAssistantId === action.assistantId;
       return {
         ...state,
@@ -122,10 +140,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "stream_finished": {
       const isActive = state.activeAssistantId === action.assistantId;
       const phase = isActive ? phaseAfterFinish(state.phase) : state.phase;
-      const messages = updateMessage(state.messages, action.assistantId, (message) => ({
-        ...message,
-        phase: phaseAfterFinish(message.phase ?? "streaming"),
-      }));
+      const messages = updateMessage(
+        state.messages,
+        action.assistantId,
+        (message) => ({
+          ...message,
+          phase: phaseAfterFinish(message.phase ?? "streaming"),
+        }),
+      );
       return {
         ...state,
         messages,
@@ -155,8 +177,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
   const nextTokens = asNumber(metadata.context_tokens);
   const nextWindow = asNumber(metadata.context_window_tokens);
-  if (isActiveTurn && nextTokens != null && nextTokens >= 0) contextTokens = nextTokens;
-  if (isActiveTurn && nextWindow != null && nextWindow > 0) contextWindowTokens = nextWindow;
+  if (isActiveTurn && nextTokens != null && nextTokens >= 0)
+    contextTokens = nextTokens;
+  if (isActiveTurn && nextWindow != null && nextWindow > 0)
+    contextWindowTokens = nextWindow;
 
   if (event.type === "status") {
     const statusText = event.content ?? null;
@@ -167,7 +191,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           ? metadata.message
           : "模型上下文已刷新，保留当前任务继续执行。聊天记录仍可查看。";
       contextNotice = notice;
-
     }
     if (
       statusText === "context_refreshed" ||
@@ -183,7 +206,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         statusText,
       }));
     }
-    if (isActiveTurn && (statusText === "context_overflow" || statusText === "context_tool_truncated") && typeof metadata.message === "string") {
+    if (
+      isActiveTurn &&
+      (statusText === "context_overflow" ||
+        statusText === "context_tool_truncated") &&
+      typeof metadata.message === "string"
+    ) {
       contextNotice = metadata.message;
     }
   } else if (event.type === "text_delta" && event.content) {
@@ -232,9 +260,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       error:
         typeof metadata.error === "string"
           ? metadata.error
-          : existing?.error ?? null,
+          : (existing?.error ?? null),
       executionTimeMs:
-        asNumber(metadata.execution_time_ms) ?? existing?.executionTimeMs ?? null,
+        asNumber(metadata.execution_time_ms) ??
+        existing?.executionTimeMs ??
+        null,
       startedAt: existing?.startedAt ?? receivedAt,
       completedAt: isToolTerminal ? receivedAt : existing?.completedAt,
     };
@@ -296,6 +326,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       ...message,
       phase: phaseAfterFinish(message.phase ?? "streaming"),
       statusText: null,
+      queryId:
+        message.phase !== "cancelled" &&
+        message.phase !== "error" &&
+        typeof metadata.query_id === "string"
+          ? metadata.query_id
+          : null,
+      confirmedQuestion:
+        typeof metadata.confirmed_question === "string"
+          ? metadata.confirmed_question
+          : null,
     }));
   }
 

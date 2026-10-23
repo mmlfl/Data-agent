@@ -15,6 +15,7 @@ class LlmMessage(BaseModel):
     content: str = Field(description="Message content")
     tool_calls: Optional[List[ToolCall]] = Field(default=None)
     tool_call_id: Optional[str] = Field(default=None)
+    reasoning_content: Optional[str] = Field(default=None, repr=False)
 
 
 class LlmRequest(BaseModel):
@@ -44,6 +45,7 @@ class LlmResponse(BaseModel):
     tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
     usage: Optional[Dict[str, int]] = None
+    reasoning_content: Optional[str] = Field(default=None, repr=False)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def is_tool_call(self) -> bool:
@@ -57,4 +59,5 @@ class LlmStreamChunk(BaseModel):
     content: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     finish_reason: Optional[str] = None
+    reasoning_content: Optional[str] = Field(default=None, repr=False)
     metadata: Dict[str, Any] = Field(default_factory=dict)

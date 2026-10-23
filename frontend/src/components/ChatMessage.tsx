@@ -1,9 +1,8 @@
-import type {
-  ChatMessage as ChatMessageType,
-  ToolCallRecord,
-} from "../types";
+import type { ChatMessage as ChatMessageType, ToolCallRecord } from "../types";
 import { MessageContent } from "./MessageContent";
 import { QueryRunway } from "./QueryRunway";
+import { QueryFeedback } from "./QueryFeedback";
+import { BrandMark } from "./BrandMark";
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -42,9 +41,11 @@ export function ChatMessage({
   return (
     <article className="turn turn--assistant" aria-live="polite">
       <div className="turn__assistant-head">
-        <span className="turn__agent-mark" aria-hidden="true">A</span>
+        <span className="turn__agent-mark" aria-hidden="true">
+          <BrandMark size={20} />
+        </span>
         <div>
-          <strong>SQL Agent</strong>
+          <strong>Data Agent</strong>
           <span>分析过程与结果</span>
         </div>
       </div>
@@ -67,6 +68,14 @@ export function ChatMessage({
             在洞察画布中查看
           </button>
         </div>
+      )}
+
+      {message.phase === "complete" && !message.error && message.queryId && (
+        <QueryFeedback
+          key={message.queryId}
+          queryId={message.queryId}
+          question={message.confirmedQuestion ?? undefined}
+        />
       )}
 
       {status && (

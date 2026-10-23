@@ -25,7 +25,11 @@ async def lifespan(_app: FastAPI):
         )
     else:
         print("[startup] WITH_DB=false — skipped schema cache")
-    yield
+    try:
+        yield
+    finally:
+        if bundle.knowledge_service is not None:
+            await asyncio.to_thread(bundle.knowledge_service.close)
 
 
 def create_app() -> FastAPI:

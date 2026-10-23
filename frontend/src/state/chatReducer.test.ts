@@ -58,6 +58,82 @@ function startedState() {
 }
 
 describe("chatReducer", () => {
+  it("restores a conversation with its results and context after opening a new analysis", () => {
+    const archived = {
+      ...startedState(),
+      activeAssistantId: null,
+      phase: "complete" as const,
+      results: {
+        "sql-1": {
+          id: "sql-1",
+          turnId: "a1",
+          data: dataframe,
+          finalResult,
+          createdAt: 1,
+        },
+      },
+      resultOrder: ["sql-1"],
+      activeResultId: "sql-1",
+      contextTokens: 1234,
+    };
+    const fresh = chatReducer(archived, {
+      type: "restore",
+      state: createInitialChatState("new"),
+    });
+    expect(fresh.messages).toEqual([]);
+    expect(fresh.results).toEqual({});
+    const restored = chatReducer(fresh, { type: "restore", state: archived });
+    expect(restored.conversationId).toBe("local");
+    expect(restored.results["sql-1"].finalResult).toEqual(finalResult);
+    expect(restored.activeResultId).toBe("sql-1");
+    expect(restored.contextTokens).toBe(1234);
+  });
+  it("binds feedback only to a completed server-selected query", () => {
+    let state = startedState();
+    state = chatReducer(state, {
+      type: "event",
+      assistantId: "a1",
+      receivedAt: 1,
+      event: evt({
+        type: "tool_result",
+        tool_name: "run_sql",
+        tool_call_id: "sql-1",
+        ui_component: dataframe,
+        metadata: { success: true, query_id: "intermediate" },
+      }),
+    });
+    expect(state.messages[1].queryId).toBeUndefined();
+    state = chatReducer(state, {
+      type: "event",
+      assistantId: "a1",
+      receivedAt: 2,
+      event: evt({
+        type: "done",
+        metadata: {
+          query_id: "final-query",
+          confirmed_question: "购买课程的学员",
+        },
+      }),
+    });
+    expect(state.messages[1].queryId).toBe("final-query");
+    expect(state.messages[1].confirmedQuestion).toBe("购买课程的学员");
+  });
+
+  it("does not offer feedback for a cancelled turn receiving a late done", () => {
+    let state = chatReducer(startedState(), {
+      type: "cancel",
+      assistantId: "a1",
+    });
+    state = chatReducer(state, {
+      type: "event",
+      assistantId: "a1",
+      receivedAt: 2,
+      event: evt({ type: "done", metadata: { query_id: "late-query" } }),
+    });
+    expect(state.messages[1].phase).toBe("cancelled");
+    expect(state.messages[1].queryId).toBeNull();
+  });
+
   it("keeps repeated calls to the same tool as separate runway steps", () => {
     let state = startedState();
     for (const [id, receivedAt] of [
@@ -245,7 +321,12 @@ describe("chatReducer", () => {
       ...state,
       messages: [
         { id: "old-u", role: "user", content: "更早的问题" },
-        { id: "old-a", role: "assistant", content: "更早的回答", phase: "complete" },
+        {
+          id: "old-a",
+          role: "assistant",
+          content: "更早的回答",
+          phase: "complete",
+        },
         ...state.messages,
       ],
     };
@@ -268,7 +349,12 @@ describe("chatReducer", () => {
     expect(state.contextTokens).toBe(1200);
     expect(state.contextWindowTokens).toBe(256000);
     expect(state.contextNotice).toBe("上下文已刷新");
-    expect(state.messages.map((m) => m.id)).toEqual(["old-u", "old-a", "u1", "a1"]);
+    expect(state.messages.map((m) => m.id)).toEqual([
+      "old-u",
+      "old-a",
+      "u1",
+      "a1",
+    ]);
 
     state = chatReducer(state, {
       type: "event",
