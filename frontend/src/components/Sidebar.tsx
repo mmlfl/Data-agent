@@ -175,7 +175,7 @@ export function Sidebar({
         <div className="sidebar__history">
           <span
             className="sidebar__label"
-            title="会话在本次打开期间保留，刷新页面后清除"
+            title="服务端保存分析记录，刷新页面后可恢复"
           >
             最近分析 <Icon name="clock" size={12} />
           </span>
@@ -204,7 +204,7 @@ export function Sidebar({
             ))
           )}
           {conversations.length > 0 && (
-            <p className="sidebar__history-note">本次打开期间保留</p>
+            <p className="sidebar__history-note">已保存，可在刷新后恢复</p>
           )}
         </div>
         <div className="sidebar__bottom">

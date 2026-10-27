@@ -1,5 +1,78 @@
 export type SyncTarget = "sqlite" | "milvus";
 
+export interface CachedTable {
+  table_name: string;
+  schema_name: string;
+  table_comment: string;
+  column_count: number;
+  synced_at: string | null;
+}
+
+export interface CacheTables {
+  available: boolean;
+  cache_file: string;
+  dialect: string;
+  total_tables: number;
+  total_columns: number;
+  last_synced_at: string | null;
+  schemas: string[];
+  matched_tables: number;
+  offset: number;
+  limit: number;
+  tables: CachedTable[];
+}
+
+export interface CachedColumn {
+  column_name: string;
+  data_type: string | null;
+  column_comment: string | null;
+  is_nullable: string | null;
+  data_length: number | null;
+}
+
+export interface CacheTable {
+  table_name: string;
+  schema_name: string;
+  table_comment: string;
+  synced_at: string | null;
+  columns: CachedColumn[];
+}
+
+export async function readCache<T>(path: string, signal?: AbortSignal): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path, { signal, cache: "no-store", headers: { Accept: "application/json" } });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new Error("无法连接缓存服务，请确认后端已启动后重试。");
+  }
+  let body;
+  try {
+    body = await response.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error();
+  } catch {
+    throw new Error("缓存接口未返回有效数据，请确认后端已更新并重启。");
+  }
+  if (!response.ok) {
+    if (response.status === 404 && body.detail === "Not Found") {
+      throw new Error("缓存浏览接口尚未加载，请更新并重启后端。");
+    }
+    throw new Error(typeof body.detail === "string" ? body.detail : "读取缓存失败，请稍后刷新。");
+  }
+  return body as T;
+}
+
+export function getCachedTables(options: { q: string; schema: string | null; offset: number }, signal?: AbortSignal) {
+  const query = new URLSearchParams({ q: options.q, offset: String(options.offset), limit: "30" });
+  if (options.schema !== null) query.set("schema_name", options.schema);
+  return readCache<CacheTables>(`/api/cache/tables?${query}`, signal);
+}
+
+export function getCachedTable(table: Pick<CachedTable, "table_name" | "schema_name">, signal?: AbortSignal) {
+  const query = new URLSearchParams({ table_name: table.table_name, schema_name: table.schema_name });
+  return readCache<CacheTable>(`/api/cache/table?${query}`, signal);
+}
+
 export interface SyncReport {
   status?: string;
   message: string;
@@ -9,30 +82,8 @@ export interface SyncReport {
   collection?: string;
 }
 
-export const DEFAULT_MILVUS_SYNC_URL =
-  import.meta.env.VITE_MILVUS_SYNC_URL || "/api/milvus/sync";
-
-/** Keep sync credentials on the application's own API origin. */
-export function validateSyncPath(path: string): string {
-  const value = path.trim();
-  if (
-    !value.startsWith("/api/") ||
-    value.includes("\\") ||
-    value.includes("#")
-  ) {
-    throw new Error(
-      "请填写以 /api/ 开头的本站接口路径，例如 /api/milvus/sync。",
-    );
-  }
-  const url = new URL(value, "http://workspace.local");
-  if (
-    url.origin !== "http://workspace.local" ||
-    !url.pathname.startsWith("/api/")
-  ) {
-    throw new Error("同步接口必须是本站 /api/ 下的路径。");
-  }
-  return value;
-}
+const SQLITE_SYNC_URL = "/api/cache/sync";
+const MILVUS_SYNC_URL = "/api/milvus/sync";
 
 function numeric(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -40,26 +91,12 @@ function numeric(value: unknown): number | undefined {
     : undefined;
 }
 
-export async function runMetadataSync(
-  target: SyncTarget,
-  milvusPath: string,
-  token = "",
-): Promise<SyncReport> {
-  const path =
-    target === "sqlite" ? "/api/cache/sync" : validateSyncPath(milvusPath);
+export async function runMetadataSync(target: SyncTarget): Promise<SyncReport> {
+  const path = target === "sqlite" ? SQLITE_SYNC_URL : MILVUS_SYNC_URL;
   const headers: Record<string, string> = {
     "X-Requested-With": "SQL-Insight-Workbench",
     Accept: "application/json",
   };
-  const credential =
-    token ||
-    (target === "sqlite"
-      ? import.meta.env.VITE_CACHE_SYNC_TOKEN
-      : import.meta.env.VITE_MILVUS_SYNC_TOKEN);
-  if (credential)
-    headers[
-      target === "sqlite" ? "X-Cache-Sync-Token" : "X-Milvus-Sync-Token"
-    ] = credential;
 
   let response: Response;
   try {
@@ -76,7 +113,7 @@ export async function runMetadataSync(
   }
   if (target === "milvus" && [404, 405].includes(response.status)) {
     throw new Error(
-      `Milvus 同步接口尚未接通（${response.status}）。请在「接口设置」填写后端实际提供的 HTTP 同步路径。`,
+      `Milvus 同步接口尚未接通（${response.status}）。请确认后端已更新并重启。`,
     );
   }
   let body: Record<string, unknown>;

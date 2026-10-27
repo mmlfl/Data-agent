@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import json
 from typing import Literal, Optional
 
 from pydantic import Field, field_validator
@@ -52,4 +54,16 @@ class DbSettings(BaseSettings):
         if self.schema_cache_path:
             return Path(self.schema_cache_path)
         # Local SQLite metadata cache (not a business DB — project extension vs Vanna)
-        return Path(__file__).resolve().parent / f"metadata_{self.db_dialect}.db"
+        return Path(__file__).resolve().parents[4] / "data" / f"metadata_{self.db_dialect}_{self.source_fingerprint[:16]}.db"
+
+    @property
+    def source_fingerprint(self) -> str:
+        return hashlib.sha256(json.dumps([self.db_dialect, self.db_host, self.db_port,
+            self.db_database, self.db_user], ensure_ascii=False).encode()).hexdigest()
+
+    def database_id(self, configured: str = "") -> str:
+        if configured.strip():
+            return configured.strip()
+        from sql_agent.capabilities.knoledge_store.experience_models import stable_hash
+        return "db:" + stable_hash([self.db_dialect, self.db_host, self.db_port,
+                                   self.db_database, self.db_user])[:32]

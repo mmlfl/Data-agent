@@ -5,6 +5,8 @@ export interface PreparedSeries {
   keys: { key: string; label: string }[];
   aggregated: boolean;
   duplicateGroups: number;
+  issue?: string;
+  omittedSeries?: number;
 }
 
 function toNumber(value: unknown): number | null {
@@ -38,11 +40,11 @@ function aggregateValues(
 
 function resolveAggregation(
   spec: ChartSpec,
-  hasDuplicates: boolean,
+  _hasDuplicates: boolean,
 ): ChartAggregation {
   const requested = spec.aggregation ?? "none";
   if (requested !== "none") return requested;
-  return hasDuplicates ? "sum" : "none";
+  return "none";
 }
 
 function aggregateByX(
@@ -74,6 +76,10 @@ function aggregateByX(
   }
 
   const aggregation = resolveAggregation(spec, duplicateGroups > 0);
+  if (duplicateGroups > 0 && aggregation === "none") return {
+    rows: [], keys: [], aggregated: false, duplicateGroups,
+    issue: "同一维度有多条记录，请选择系列字段或明确聚合方式后绘图；比例与平均值不能默认求和。",
+  };
   const aggregatedRows = Array.from(buckets.values()).map((bucket) => {
     const next: Record<string, unknown> = { [xField]: bucket.xValue };
     for (const yField of spec.y_fields) {
@@ -119,9 +125,10 @@ export function prepareSeries(
 
   const xField = spec.x_field;
   const seriesField = spec.series_field;
-  const seriesValues = Array.from(
+  const allSeries = Array.from(
     new Set(rows.map((row) => String(row[seriesField] ?? "未分类"))),
-  ).slice(0, 8);
+  );
+  const seriesValues = allSeries.slice(0, 8);
 
   type Bucket = {
     xValue: unknown;
@@ -151,6 +158,10 @@ export function prepareSeries(
   }
 
   const aggregation = resolveAggregation(spec, duplicateGroups > 0);
+  if (duplicateGroups > 0 && aggregation === "none") return {
+    rows: [], keys: [], aggregated: false, duplicateGroups,
+    issue: "相同维度和系列存在重复记录，请明确聚合口径。",
+  };
   const preparedRows = Array.from(byX.values()).map((bucket) => {
     const next: Record<string, unknown> = { [xField]: bucket.xValue };
     for (const [key, values] of Object.entries(bucket.values)) {
@@ -169,5 +180,6 @@ export function prepareSeries(
     ),
     aggregated: aggregation !== "none" && duplicateGroups > 0,
     duplicateGroups,
+    omittedSeries: Math.max(0, allSeries.length - seriesValues.length),
   };
 }

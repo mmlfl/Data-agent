@@ -25,11 +25,17 @@ async def lifespan(_app: FastAPI):
         )
     else:
         print("[startup] WITH_DB=false — skipped schema cache")
+    from sql_agent.servers.execution import get_execution_manager
+    execution = get_execution_manager()
+    await execution.start()
     try:
         yield
     finally:
+        await execution.close()
         if bundle.knowledge_service is not None:
             await asyncio.to_thread(bundle.knowledge_service.close)
+        if bundle.pool is not None:
+            await asyncio.to_thread(bundle.pool.close)
 
 
 def create_app() -> FastAPI:

@@ -8,6 +8,7 @@ function resultSummary(call: ToolCallRecord): string {
   if (call.status === "running") return "处理中";
   if (call.status === "error") return "需要检查";
   if (!component) return "已完成";
+  if (component.type === "knowledge") return component.status === "found" ? "已找到参考" : "查看检索状态";
   if (component.type === "table_list")
     return `${component.tables.length} 张候选表`;
   if (component.type === "table_schema")

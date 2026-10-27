@@ -10,7 +10,7 @@ from typing import Optional
 from sql_agent.core.agent import Agent, AgentConfig
 from sql_agent.core.registry import ToolRegistry
 from sql_agent.core.system_prompt import DefaultSystemPromptBuilder
-from sql_agent.core.user import FixedUserResolver
+from sql_agent.core.user.session import build_user_resolver
 from sql_agent.integrations.db import (
     DbSettings,
     InMemoryAgentMemory,
@@ -32,6 +32,9 @@ class RuntimeBundle:
     schema_cache: Optional[SchemaCache]
     cache_info: Optional[dict]
     knowledge_service: object | None = None
+    ledger: object | None = None
+    scope: str = "local"
+    pool: object | None = None
 
 
 def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
@@ -45,6 +48,7 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
     cache_info: Optional[dict] = None
     settings: Optional[DbSettings] = None
     knowledge_service = None
+    pool = None
 
     if with_db:
         settings = DbSettings()
@@ -81,7 +85,6 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
             access_groups=["user"],
             expose_to_llm=False,
         )
-        from sql_agent.capabilities.knoledge_store.experience_models import stable_hash
         from sql_agent.integrations.db.experience_store import ExperienceStore
         from sql_agent.integrations.milvus.memory_store import KnowledgeVectors
         from sql_agent.integrations.milvus.settings import MilvusSettings
@@ -89,9 +92,7 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
         from sql_agent.tools.knowledge import KnowledgeTool
 
         rag_settings = MilvusSettings()
-        database_id = rag_settings.rag_database_id.strip() or "db:" + stable_hash(
-            [settings.db_dialect, settings.db_host, settings.db_port, settings.db_database, settings.db_user]
-        )[:32]
+        database_id = settings.database_id(rag_settings.rag_database_id)
         knowledge_path = Path(rag_settings.knowledge_db_path)
         if not knowledge_path.is_absolute():
             knowledge_path = Path(__file__).resolve().parents[2] / knowledge_path
@@ -110,11 +111,16 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
         if settings
         else int(os.getenv("DB_MAX_RESULT_ROWS", "100"))
     )
+    from sql_agent.services.runtime_store import RuntimeStore
+    from sql_agent.integrations.db.conversation_store import SqliteConversationStore
+    runtime_scope = f"{rag_settings.rag_tenant_id}:{database_id}" if with_db else "offline"
+    ledger = RuntimeStore(os.getenv("SQL_AGENT_RUNTIME_DB", str(Path(__file__).resolve().parents[2] / "data/sql_agent_runtime.db")))
     agent = Agent(
         llm_service=llm,
         tool_registry=registry,
-        user_resolver=FixedUserResolver(),
+        user_resolver=build_user_resolver(),
         agent_memory=InMemoryAgentMemory(),
+        conversation_store=SqliteConversationStore(ledger, runtime_scope),
         system_prompt_builder=DefaultSystemPromptBuilder(
             dialect=dialect,
             max_result_rows=max_result_rows,
@@ -134,7 +140,8 @@ def build_runtime(*, with_db: bool | None = None) -> RuntimeBundle:
         ),
         knowledge_service=knowledge_service,
     )
-    return RuntimeBundle(agent=agent, schema_cache=schema_cache, cache_info=cache_info, knowledge_service=knowledge_service)
+    return RuntimeBundle(agent=agent, schema_cache=schema_cache, cache_info=cache_info, knowledge_service=knowledge_service,
+                         ledger=ledger, scope=runtime_scope, pool=pool)
 
 
 def build_agent(*, with_db: bool | None = None) -> Agent:

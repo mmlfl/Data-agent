@@ -10,8 +10,9 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import type { ColumnDataType, DataFrameComponent } from "../types";
-import { defaultCsvFilename, exportToCsv } from "../utils/exportCsv";
+import { defaultCsvFilename, exportToCsv, exportJson } from "../utils/exportCsv";
 import { RowDetailModal } from "./RowDetailModal";
+import { compareNumericText } from "../utils/numeric";
 
 const PAGE_SIZE = 25;
 
@@ -19,9 +20,7 @@ function formatCell(value: unknown, type: ColumnDataType): string {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "object") return JSON.stringify(value);
   if (type === "number" && typeof value === "number") {
-    return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(
-      value,
-    );
+    return String(value);
   }
   if (type === "boolean") return value ? "是" : "否";
   if (type === "datetime" && typeof value === "string") {
@@ -38,6 +37,9 @@ interface QueryResultTableProps {
 export function QueryResultTable({ data }: QueryResultTableProps) {
   const [globalFilter, setGlobalFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([]);
+  const [exportScope, setExportScope] = useState("filtered");
+  const [exportFormat, setExportFormat] = useState("csv");
+  const [exportNotice, setExportNotice] = useState("");
   const [selectedRow, setSelectedRow] = useState<Record<
     string,
     unknown
@@ -48,9 +50,10 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
       data.columns.map((column) => ({
         id: column.name,
         accessorFn: (row) => row[column.name],
+        sortingFn: column.numeric_encoding === "exact_string" ? (a, b) => compareNumericText(a.original[column.name], b.original[column.name]) : "auto",
         header: () => (
           <span className="result-table__column">
-            <span>{column.name}</span>
+            <span title={column.source_name ?? column.name}>{column.name}</span>
             <small>{column.data_type}</small>
           </span>
         ),
@@ -96,12 +99,17 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
   });
 
   const handleExport = () => {
-    const filtered = table.getSortedRowModel().rows.map((r) => r.original);
-    exportToCsv(
+    const filtered = exportScope === "loaded" ? data.rows :
+      (exportScope === "page" ? table.getRowModel() : table.getSortedRowModel()).rows.map((r) => r.original);
+    if (exportFormat === "json") exportJson({ columns: data.columns, rows: filtered, sql: data.sql,
+      exported_rows: filtered.length, loaded_rows: data.displayed_row_count, truncated: data.truncated,
+      row_count_is_exact: data.row_count_is_exact, exported_at: new Date().toISOString() }, defaultCsvFilename().replace(/csv$/, "json"));
+    else exportToCsv(
       data.columns.map((column) => column.name),
       filtered,
       defaultCsvFilename(),
     );
+    setExportNotice(`已导出 ${filtered.length} 行${data.truncated ? "；仅含已加载数据，查询结果未完整取回" : ""}。${exportFormat === "csv" ? "CSV 已防护公式和长数字；需要原始值时请选择 JSON。" : ""}`);
   };
 
   return (
@@ -116,19 +124,24 @@ export function QueryResultTable({ data }: QueryResultTableProps) {
           aria-label="搜索表格"
         />
         <div className="result-table__meta">
-          共 {data.row_count} 行
+          {data.row_count_is_exact ? "共" : "已取回至少"} {data.row_count} 行
           {data.truncated && ` · 当前展示前 ${data.displayed_row_count} 行`}
           {globalFilter &&
             ` · 筛选后 ${table.getFilteredRowModel().rows.length} 行`}
         </div>
-        <button
+        <select aria-label="导出范围" value={exportScope} onChange={e => setExportScope(e.target.value)}>
+          <option value="filtered">筛选和排序后</option><option value="loaded">全部已加载数据</option><option value="page">当前页</option>
+        </select>
+        <select aria-label="导出格式" value={exportFormat} onChange={e => setExportFormat(e.target.value)}><option value="csv">CSV</option><option value="json">JSON 原始数据</option></select>
+        <button disabled={!data.rows.length}
           type="button"
           className="result-table__export"
           onClick={handleExport}
         >
-          导出 CSV
+          导出数据
         </button>
       </div>
+      {(exportNotice || data.truncated) && <p className="chart-panel__note" role="status">{exportNotice || "当前是受限结果集，筛选、排序与导出仅覆盖已加载数据。"}</p>}
 
       {data.rows.length === 0 ? (
         <p className="result-table__empty">查询未返回任何行。</p>

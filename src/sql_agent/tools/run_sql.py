@@ -39,9 +39,15 @@ def normalize_cell(value: Any) -> Any:
     if isinstance(value, Decimal):
         if not value.is_finite():
             return None
-        return float(value) if value % 1 else int(value)
+        if not value % 1:
+            integer = int(value)
+            return integer if abs(integer) <= 9007199254740991 else str(value)
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) and Decimal(str(numeric)) == value else str(value)
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 9007199254740991:
+        return str(value)
     if isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Number):
@@ -101,12 +107,20 @@ def format_sql_result(
 
 def _unique_column_names(columns: list[str]) -> list[str]:
     """Keep object-row keys lossless when a query returns duplicate aliases."""
-    counts: dict[str, int] = {}
+    reserved = {str(name) for name in columns}
+    used: set[str] = set()
     unique: list[str] = []
     for raw_name in columns:
         name = str(raw_name)
-        counts[name] = counts.get(name, 0) + 1
-        unique.append(name if counts[name] == 1 else f"{name}_{counts[name]}")
+        candidate, suffix = name, 2
+        while candidate in used:
+            candidate = f"{name}_{suffix}"
+            suffix += 1
+            while candidate in reserved or candidate in used:
+                candidate = f"{name}_{suffix}"
+                suffix += 1
+        used.add(candidate)
+        unique.append(candidate)
     return unique
 
 
@@ -155,6 +169,11 @@ def build_result_component(
     typed_columns = [
         DataColumn(
             name=name,
+            source_name=str(columns[index]),
+            numeric_encoding="exact_string" if any(
+                isinstance(row[index], (int, Decimal)) and isinstance(normalize_cell(row[index]), str)
+                for row in rows if index < len(row)
+            ) else "native",
             data_type=infer_column_type(
                 [row[index] for row in rows if index < len(row)]
             ),

@@ -139,13 +139,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case "stream_finished": {
       const isActive = state.activeAssistantId === action.assistantId;
-      const phase = isActive ? phaseAfterFinish(state.phase) : state.phase;
+      const phase = isActive && (state.phase === "streaming" || state.phase === "summarizing") ? "error" : state.phase;
       const messages = updateMessage(
         state.messages,
         action.assistantId,
         (message) => ({
           ...message,
-          phase: phaseAfterFinish(message.phase ?? "streaming"),
+          phase: message.phase === "streaming" || message.phase === "summarizing" ? "error" : message.phase,
+          error: message.error ?? (message.phase === "streaming" || message.phase === "summarizing" ? "连接已结束，但分析尚未完成。" : null),
         }),
       );
       return {
@@ -160,8 +161,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       break;
   }
 
-  const { event, assistantId, receivedAt } = action;
+  const { assistantId, receivedAt } = action;
+  let event = action.event;
+  const runId = event.metadata?.run_id;
+  if (typeof runId === "string") {
+    const scoped = (id: string) => id.startsWith(`${runId}:`) ? id : `${runId}:${id}`;
+    event = { ...event, tool_call_id: event.tool_call_id ? scoped(event.tool_call_id) : event.tool_call_id,
+      ui_component: event.ui_component?.type === "final_result" ? { ...event.ui_component, source_tool_call_id: scoped(event.ui_component.source_tool_call_id) } : event.ui_component };
+  }
   const metadata = event.metadata ?? {};
+  if (typeof metadata.run_id === "string") state = { ...state, messages: updateMessage(state.messages, assistantId, message => ({ ...message, runId: metadata.run_id as string })) };
   let messages = state.messages;
   let toolCalls = state.toolCalls;
   let results = state.results;
@@ -311,6 +320,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   }
 
   if (event.type === "done") {
+    const terminal = metadata.terminal_state;
+    if (terminal === "cancelled") {
+      phase = "cancelled";
+      messages = updateMessage(messages, assistantId, message => ({ ...message, phase: "cancelled", statusText: "运行已取消" }));
+    } else if (terminal === "error" || terminal === "interrupted") {
+      phase = "error";
+      messages = updateMessage(messages, assistantId, message => ({ ...message, phase: "error", error: message.error ?? "该运行未完整完成，请核对已有结果。" }));
+    }
     if (isActiveTurn) {
       phase = phaseAfterFinish(phase);
       activeAssistantId = null;

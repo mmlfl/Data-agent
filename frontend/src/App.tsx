@@ -1,19 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { fetchHealth } from "./api/chat";
 import { AnalysisHome } from "./components/AnalysisHome";
 import { ConversationPane } from "./components/ConversationPane";
 import { Header } from "./components/Header";
 import { Icon } from "./components/Icon";
-import { MetadataManager } from "./components/MetadataManager";
 import { Sidebar } from "./components/Sidebar";
 import { ResultPane } from "./components/results/ResultPane";
 import { useChat } from "./hooks/useChat";
 import { useMetadataSync } from "./hooks/useMetadataSync";
 import { useTheme } from "./hooks/useTheme";
 import type { HealthResponse, ResultArtifact } from "./types";
+const MetadataManager = lazy(() => import("./components/MetadataManager").then(module => ({ default: module.MetadataManager })));
 
 export default function App() {
   const [page, setPage] = useState<"analysis" | "metadata">("analysis");
+  const [metadataOpened, setMetadataOpened] = useState(false);
   const [mobileView, setMobileView] = useState<"conversation" | "results">(
     "conversation",
   );
@@ -62,6 +63,7 @@ export default function App() {
   }, []);
 
   const navigate = (next: "analysis" | "metadata") => {
+    if (next === "metadata") setMetadataOpened(true);
     setPage(next);
     setSidebarOpen(false);
   };
@@ -209,15 +211,14 @@ export default function App() {
             )}
           </div>
           <div hidden={page !== "metadata"}>
-            <MetadataManager
+            {metadataOpened && <Suspense fallback={<p>正在加载元数据管理…</p>}><MetadataManager
+              active={page === "metadata"}
               health={health}
               healthError={healthError}
               executions={metadata.executions}
               activeTarget={metadata.activeTarget}
-              onSync={(target, path, token) =>
-                void metadata.sync(target, path, token)
-              }
-            />
+              onSync={(target) => void metadata.sync(target)}
+            /></Suspense>}
           </div>
         </main>
         <footer className="workspace-footer">

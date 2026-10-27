@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -20,6 +20,9 @@ import {
 } from "recharts";
 import type { ChartSpec, ChartType, DataFrameComponent } from "../../types";
 import { prepareSeries } from "./chartPrepare";
+import { availableChartTypes } from "./chartPolicy";
+import { exportChart } from "../../utils/exportChart";
+export { availableChartTypes } from "./chartPolicy";
 
 const CHART_COLORS = ["#448574", "#6d8bc6", "#c69b55", "#9b85bd", "#7a9c6b"];
 const MAX_CHART_ROWS = 100;
@@ -32,25 +35,6 @@ const CHART_LABELS: Record<Exclude<ChartType, "none">, string> = {
   scatter: "散点",
 };
 
-export function availableChartTypes(
-  data: DataFrameComponent,
-  spec: ChartSpec,
-): Exclude<ChartType, "none">[] {
-  if (!spec.x_field || spec.y_fields.length === 0) return [];
-  const typeByName = new Map(
-    data.columns.map((column) => [column.name, column.data_type]),
-  );
-  if (!typeByName.has(spec.x_field)) return [];
-  const hasNumericY = spec.y_fields.some(
-    (field) => typeByName.get(field) === "number",
-  );
-  if (!hasNumericY) return [];
-  const result: Exclude<ChartType, "none">[] = ["bar", "line", "area"];
-  if (data.rows.length <= 12) result.push("pie");
-  if (typeByName.get(spec.x_field) === "number") result.push("scatter");
-  return result;
-}
-
 export function ChartPanel({
   data,
   spec,
@@ -58,6 +42,8 @@ export function ChartPanel({
   data: DataFrameComponent;
   spec: ChartSpec;
 }) {
+  const container = useRef<HTMLDivElement>(null);
+  const [exportError, setExportError] = useState("");
   const available = useMemo(
     () => availableChartTypes(data, spec),
     [data, spec],
@@ -74,7 +60,12 @@ export function ChartPanel({
     setChartType(defaultType);
   }, [defaultType, data.sql]);
 
-  const sourceRows = data.rows.slice(0, MAX_CHART_ROWS);
+  const sourceRows = useMemo(() => {
+    const rows = [...data.rows];
+    if ((chartType === "line" || chartType === "area") && spec.x_field)
+      rows.sort((a, b) => String(a[spec.x_field!]).localeCompare(String(b[spec.x_field!]), undefined, { numeric: true }));
+    return rows.slice(0, MAX_CHART_ROWS);
+  }, [data.rows, chartType, spec.x_field]);
   const prepared = useMemo(
     () => prepareSeries(sourceRows, spec, chartType),
     [sourceRows, spec, chartType],
@@ -87,7 +78,7 @@ export function ChartPanel({
           ⌁
         </span>
         <strong>当前结果更适合表格查看</strong>
-        <p>{spec.reason || "缺少可用于稳定绘图的分类、时间或数值字段。"}</p>
+        <p>{prepared.issue || spec.reason || "缺少可用于稳定绘图的分类、时间或数值字段。"}</p>
       </div>
     );
   }
@@ -149,11 +140,20 @@ export function ChartPanel({
           ))}
         </div>
       </header>
+      <div className="result-export-actions">
+        {(["png", "svg"] as const).map(format => <button type="button" key={format} onClick={async () => {
+          setExportError(""); try { if (container.current) await exportChart(container.current, format, "query-chart"); }
+          catch (error) { setExportError(error instanceof Error ? error.message : "图片导出失败"); }
+        }}>导出 {format.toUpperCase()}</button>)}
+        {exportError && <span role="alert">{exportError}</span>}
+      </div>
 
       <div
         className="chart-panel__canvas"
+        ref={container}
         role="img"
         aria-label={spec.title || "查询结果图表"}
+        data-export-note={`基于已加载 ${sourceRows.length} 行${data.truncated ? "，查询结果已截断" : ""} · ${prepared.keys.map(key => key.label).join(" / ")}`}
       >
         <ResponsiveContainer width="100%" height="100%">
           {chartType === "bar" ? (
@@ -262,6 +262,7 @@ export function ChartPanel({
           )}
         </ResponsiveContainer>
       </div>
+      {prepared.omittedSeries ? <p className="chart-panel__note">系列过多，当前仅展示前 8 个系列，另 {prepared.omittedSeries} 个未绘制；请缩小范围。</p> : null}
 
       {(data.rows.length > MAX_CHART_ROWS ||
         data.truncated ||

@@ -3,6 +3,7 @@ import { MessageContent } from "./MessageContent";
 import { QueryRunway } from "./QueryRunway";
 import { QueryFeedback } from "./QueryFeedback";
 import { BrandMark } from "./BrandMark";
+import { RunRecord } from "./RunRecord";
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -51,6 +52,7 @@ export function ChatMessage({
       </div>
 
       {calls.length > 0 && <QueryRunway calls={calls} />}
+      {message.runId && message.phase !== "streaming" && message.phase !== "summarizing" && <RunRecord runId={message.runId} />}
 
       {message.content && <MessageContent content={message.content} />}
 

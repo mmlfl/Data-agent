@@ -1,76 +1,52 @@
-import { useRef, useState } from "react";
-import {
-  runMetadataSync,
-  type SyncReport,
-  type SyncTarget,
-} from "../api/metadata";
+import { useEffect, useRef, useState } from "react";
+import { type SyncReport, type SyncTarget } from "../api/metadata";
+import { listJobs, submitJob, type MetadataJob } from "../api/jobs";
 
 export interface SyncExecution {
-  id: string;
-  target: SyncTarget;
-  status: "running" | "success" | "error";
-  startedAt: number;
-  finishedAt?: number;
-  message: string;
-  report?: SyncReport;
+  id: string; target: SyncTarget; status: "running" | "success" | "error";
+  startedAt: number; finishedAt?: number; message: string; report?: SyncReport;
 }
 
 export function useMetadataSync(onCacheSynced: () => Promise<unknown>) {
   const [executions, setExecutions] = useState<SyncExecution[]>([]);
-  const [activeTarget, setActiveTarget] = useState<SyncTarget | null>(null);
-  const lock = useRef(false);
-
-  const sync = async (target: SyncTarget, path: string, token: string) => {
-    if (lock.current) return;
-    lock.current = true;
-    setActiveTarget(target);
-    const id = crypto.randomUUID();
-    const execution: SyncExecution = {
-      id,
-      target,
-      status: "running",
-      startedAt: Date.now(),
-      message: "正在重新同步单表元数据，请保持页面打开…",
-    };
-    setExecutions((current) => [execution, ...current].slice(0, 30));
-    try {
-      const report = await runMetadataSync(target, path, token);
-      setExecutions((current) =>
-        current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                status: "success",
-                finishedAt: Date.now(),
-                message: report.message,
-                report,
-              }
-            : item,
-        ),
-      );
-      // Health failure after a successful sync must not turn it into a failed sync.
-      if (target === "sqlite") await onCacheSynced().catch(() => {});
-    } catch (error) {
-      setExecutions((current) =>
-        current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                status: "error",
-                finishedAt: Date.now(),
-                message:
-                  error instanceof Error
-                    ? error.message
-                    : "同步失败，请稍后重试。",
-              }
-            : item,
-        ),
-      );
-    } finally {
-      lock.current = false;
-      setActiveTarget(null);
+  const [submitting, setSubmitting] = useState<SyncTarget | null>(null);
+  const [submissionError, setSubmissionError] = useState<SyncExecution | null>(null);
+  const lock = useRef(false), lastSuccess = useRef("");
+  const refreshHealth = useRef(onCacheSynced); refreshHealth.current = onCacheSynced;
+  const update = (jobs: MetadataJob[]) => {
+    const rows: SyncExecution[] = jobs.filter(job => job.target === "sqlite" || job.target === "milvus").map(job => ({
+      id: job.id, target: job.target as SyncTarget,
+      status: job.status === "success" ? "success" : ["queued", "running"].includes(job.status) ? "running" : "error",
+      startedAt: job.created_at * 1000, finishedAt: ["queued", "running"].includes(job.status) ? undefined : job.updated_at * 1000,
+      message: job.error || String(job.report?.message ?? job.stage), report: job.report ? {
+        message: String(job.report.message ?? job.stage), tableCount: job.report.table_count as number | undefined,
+        written: job.report.written as number | undefined, skipped: job.report.skipped as number | undefined,
+        collection: job.report.collection as string | undefined,
+      } : undefined,
+    }));
+    setExecutions(rows);
+    const success = rows.find(job => job.target === "sqlite" && job.status === "success");
+    if (success && success.id !== lastSuccess.current) {
+      lastSuccess.current = success.id; void refreshHealth.current().catch(() => {});
     }
   };
-
-  return { executions, activeTarget, sync };
+  useEffect(() => {
+    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try { const result = await listJobs(controller.signal); if (!controller.signal.aborted) update(result.jobs); }
+      catch { /* Recover on the next poll after a disconnect. */ }
+      finally { if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 1500); }
+    };
+    void poll(); return () => { controller.abort(); clearTimeout(timer); };
+  }, []);
+  const sync = async (target: SyncTarget) => {
+    if (lock.current) return;
+    lock.current = true; setSubmitting(target); setSubmissionError(null);
+    try { await submitJob(target); update((await listJobs()).jobs); }
+    catch (error) { setSubmissionError({ id: crypto.randomUUID(), target, status: "error", startedAt: Date.now(),
+      finishedAt: Date.now(), message: error instanceof Error ? error.message : "任务提交失败，请重试" }); }
+    finally { lock.current = false; setSubmitting(null); }
+  };
+  return { executions: submissionError ? [submissionError, ...executions] : executions,
+    activeTarget: submitting ?? executions.find(job => job.status === "running")?.target ?? null, sync };
 }

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sql_agent.core.tool.base import Tool
 from sql_agent.core.tool.models import ToolResult
 from sql_agent.tools.schema_context import remember_schema
+from sql_agent.components.models import KnowledgeComponent
 
 
 class SearchQuestion(BaseModel):
@@ -70,6 +71,7 @@ class KnowledgeTool(Tool):
                         "version": result["schema_version"], "tool_call_id": context.metadata["tool_call_id"],
                     }
             return ToolResult(success=True, result_for_llm=json.dumps(result, ensure_ascii=False),
+                              ui_component=KnowledgeComponent(kind=self.kind, status=result['status'], payload=result),
                               metadata={"retrieval_status": result["status"]})
         except ValueError as error:
             return ToolResult(success=False, result_for_llm=str(error), user_error="表身份未明确，请先查找准确表名。")

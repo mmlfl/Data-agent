@@ -37,9 +37,26 @@ export function ToolDetail({ call }: { call: ToolCallRecord }) {
         <div className="tool-detail__label">
           {call.status === "running" ? "正在处理" : "调用参数"}
         </div>
-        <pre>{displayValue(args)}</pre>
+        <pre>{displayValue(call.content ?? args)}</pre>
       </div>
     );
+  }
+
+  if (component.type === "knowledge") {
+    const payload = component.payload;
+    const labels: Record<string, string> = { found: "已找到参考", empty: "暂无匹配参考", unavailable: "检索暂不可用，已允许其他工具继续",
+      no_path: "当前已知关系中没有找到路径", empty_graph: "尚无已确认关系", ambiguous: "存在多种连接角色，需要明确",
+      budget_exhausted: "达到搜索范围上限", reused: "已复用本轮结构" };
+    return <div className="tool-detail">
+      <strong>{labels[component.status] ?? component.status}</strong>
+      {payload.message && <p>{payload.message}</p>}
+      {payload.tables?.length ? <ul>{payload.tables.map(table => <li key={table.table_key ?? table.table_name}><code>{table.table_key ?? table.table_name}</code></li>)}</ul> : null}
+      {payload.path?.length ? <p className="knowledge-path">{payload.path.join(" → ")}</p> : null}
+      {payload.examples?.map(example => <details key={example.source_query_id}><summary>{example.question}</summary><pre>{example.sql}</pre><small>来源查询：{example.source_query_id}</small></details>)}
+      {[...(payload.relations ?? []), ...(payload.candidates ?? [])].map((relation, index) => <details key={index}><summary>连接条件与来源 {index + 1}</summary><pre>{JSON.stringify(relation, null, 2)}</pre></details>)}
+      {payload.note && <small>{payload.note}</small>}
+      {payload.missing_tables?.length ? <p>需要补查结构：{payload.missing_tables.join("、")}</p> : null}
+    </div>;
   }
 
   if (component.type === "table_list") {

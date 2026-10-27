@@ -1,9 +1,13 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import type { ResultArtifact, TurnPhase } from "../../types";
+import type { ChartSpec, ResultArtifact, TurnPhase } from "../../types";
 import { QueryResultTable } from "../QueryResultTable";
 import { ResultSummary } from "./ResultSummary";
 import { SqlDisclosure } from "./SqlDisclosure";
 import { Icon } from "../Icon";
+import { availableChartTypes, measureFields, numericFields, recommendChart } from "./chartPolicy";
+import { ChartControls } from "./ChartControls";
+import { downloadBlob, exportJson } from "../../utils/exportCsv";
+import "../../styles/results-enhanced.css";
 
 const ChartPanel = lazy(() =>
   import("./ChartPanel").then((module) => ({ default: module.ChartPanel })),
@@ -26,14 +30,15 @@ export function ResultPane({
     artifacts.find((artifact) => artifact.id === activeResultId) ??
     artifacts[artifacts.length - 1] ??
     null;
-  const hasChart = Boolean(
-    active?.finalResult && active.finalResult.chart.type !== "none",
-  );
+  const [choice, setChoice] = useState<{ id: string; spec: ChartSpec } | null>(null);
+  const spec = active ? choice?.id === active.id ? choice.spec : active.finalResult?.chart ?? recommendChart(active.data) : null;
+  const hasChart = Boolean(active && spec && spec.type !== "none" && availableChartTypes(active.data, spec).length);
+  const canConfigureChart = Boolean(active && active.data.rows.length >= 2 && numericFields(active.data).length);
   const [view, setView] = useState<"chart" | "table">("table");
 
   useEffect(() => {
     setView(hasChart ? "chart" : "table");
-  }, [active?.id, active?.finalResult?.chart.type, hasChart]);
+  }, [active?.id, active?.finalResult?.chart.type]);
 
   return (
     <section className="result-pane" aria-label="查询洞察画布">
@@ -44,7 +49,7 @@ export function ResultPane({
         </div>
         {active && (
           <span className="pane-heading__meta">
-            {active.data.row_count} 行 · {active.data.columns.length} 列
+            {active.data.row_count_is_exact ? "" : "至少 "}{active.data.row_count} 行 · {active.data.columns.length} 列
           </span>
         )}
       </header>
@@ -91,6 +96,11 @@ export function ResultPane({
             artifact={active}
             loading={phase === "streaming" || phase === "summarizing"}
           />
+          {active.data.rows.length === 1 && measureFields(active.data).length > 0 && <div className="result-metrics">{measureFields(active.data).map(column => <div key={column.name}><span>{column.name}</span><strong>{String(active.data.rows[0][column.name] ?? "—")}</strong></div>)}</div>}
+          <div className="result-export-actions">
+            <button type="button" onClick={() => downloadBlob(new Blob([active.data.sql], { type: "text/plain;charset=utf-8" }), "query.sql")}>导出 SQL</button>
+            <button type="button" onClick={() => exportJson({ result: active.data, conclusion: active.finalResult, exported_at: new Date().toISOString() }, "query-analysis.json")}>导出分析记录</button>
+          </div>
 
           <div className="result-view">
             <header className="result-view__toolbar">
@@ -104,8 +114,14 @@ export function ResultPane({
                   role="tab"
                   aria-selected={view === "chart"}
                   className={view === "chart" ? "is-active" : ""}
-                  disabled={!hasChart}
-                  onClick={() => setView("chart")}
+                  disabled={!canConfigureChart}
+                  onClick={() => {
+                    if (active && (!spec?.x_field || !spec.y_fields.length)) {
+                      const x = active.data.columns.find(column => column.data_type !== "number") ?? active.data.columns[0];
+                      setChoice({ id: active.id, spec: { type: "bar", x_field: x.name, y_fields: [numericFields(active.data)[0].name], aggregation: "none" } });
+                    }
+                    setView("chart");
+                  }}
                 >
                   <Icon name="chart" size={14} />
                   图表
@@ -128,7 +144,8 @@ export function ResultPane({
             </header>
 
             <div className="result-view__body">
-              {view === "chart" && active.finalResult ? (
+              {view === "chart" && spec ? (<>
+                <ChartControls data={active.data} spec={spec} onChange={next => setChoice({ id: active.id, spec: next })} />
                 <Suspense
                   fallback={
                     <div className="chart-empty">
@@ -138,14 +155,15 @@ export function ResultPane({
                 >
                   <ChartPanel
                     data={active.data}
-                    spec={active.finalResult.chart}
+                    spec={spec}
                   />
-                </Suspense>
+                </Suspense></>
               ) : (
                 <QueryResultTable key={active.id} data={active.data} />
               )}
             </div>
           </div>
+          {!hasChart && view === "table" && <p className="chart-panel__note">{spec?.reason || "当前结果以数据表展示，需要时可手动配置图表。"}</p>}
 
           <SqlDisclosure sql={active.data.sql} />
         </div>

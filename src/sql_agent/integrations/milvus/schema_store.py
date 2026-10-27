@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from sql_agent.capabilities.embedding.base import Embedder
@@ -17,6 +17,8 @@ class SchemaSyncReport:
     total: int
     written: int = 0
     skipped: int = 0
+    deactivated: int = 0
+    reconciliation_complete: bool = False
 
 
 class SchemaSyncError(RuntimeError):
@@ -34,7 +36,7 @@ class MilvusSchemaStore:
     """Injected resources are owned by the caller; this store never opens a connection."""
 
     def __init__(self, client: Any, *, embedder: Embedder, collection_name: str,
-                 timeout: float = 60, batch_size: int = 10):
+                 timeout: float = 60, batch_size: int = 10, progress=None):
         if timeout <= 0 or batch_size <= 0:
             raise ValueError("timeout 和 batch_size 必须为正数")
         self.client = client
@@ -42,13 +44,16 @@ class MilvusSchemaStore:
         self.collection_name = collection_name
         self.timeout = timeout
         self.batch_size = batch_size
+        self.progress = progress
 
     def ensure(self) -> None:
         ensure_schema_collection(self.client, name=self.collection_name,
                                  embedder=self.embedder, timeout=self.timeout)
 
-    def upsert(self, documents: list[SchemaDocument], *, force: bool = False) -> SchemaSyncReport:
+    def upsert(self, documents: list[SchemaDocument], *, force: bool = False, full_snapshot: bool = False) -> SchemaSyncReport:
         report = SchemaSyncReport(total=len(documents))
+        if full_snapshot and len({(doc.database_id, doc.tenant_id) for doc in documents}) > 1:
+            raise ValueError('全量对账必须限定一个数据源与租户')
         if len({doc.record_id for doc in documents}) != len(documents):
             raise ValueError("输入中存在重复的单表文档 ID")
         for document in documents:
@@ -75,6 +80,8 @@ class MilvusSchemaStore:
                 )]
                 report.skipped += len(batch) - len(changed)
                 if not changed:
+                    if self.progress:
+                        self.progress(asdict(report))
                     continue
                 stage = "Embedding"
                 encoded = self.embedder.encode_documents([doc.document_text for doc in changed])
@@ -92,9 +99,34 @@ class MilvusSchemaStore:
                 if written != len(entities):
                     raise RuntimeError("Milvus 返回的写入数量与单表文档数量不符")
                 report.written += written
+                if self.progress:
+                    self.progress(asdict(report))
             except Exception as error:
                 raise SchemaSyncError(report, [doc.record_id for doc in batch],
                                       stage=stage, cause_name=type(error).__name__) from error
+        if full_snapshot:
+            scopes = {(doc.database_id, doc.tenant_id) for doc in documents}
+            if len(scopes) != 1:
+                raise ValueError('全量对账必须限定一个数据源与租户')
+            database_id, tenant_id = scopes.pop()
+            expression = 'database_id == {database} and tenant_id == {tenant} and active == true'
+            parameters = {'database': database_id, 'tenant': tenant_id}
+            existing = self.client.query(collection_name=self.collection_name, filter=expression, filter_params=parameters,
+                output_fields=['record_id'], limit=5001, consistency_level='Strong', timeout=self.timeout)
+            if len(existing) <= 5000:
+                current = {doc.record_id for doc in documents}
+                missing = [row['record_id'] for row in existing if row['record_id'] not in current]
+                for offset in range(0, len(missing), self.batch_size):
+                    rows = self.client.query(collection_name=self.collection_name,
+                        filter=expression + ' and record_id in {ids}', filter_params={**parameters, 'ids': missing[offset:offset + self.batch_size]},
+                        output_fields=list(SchemaDocument.model_fields) + ['dense_vector', 'updated_at'], consistency_level='Strong', timeout=self.timeout)
+                    for row in rows:
+                        row.update(active=False, updated_at=int(time.time()))
+                    result = self.client.upsert(collection_name=self.collection_name, data=rows, timeout=self.timeout) if rows else {}
+                    if rows and result.get('upsert_count') != len(rows):
+                        raise RuntimeError('旧表停用数量不匹配，可重试全量同步')
+                    report.deactivated += len(rows)
+                report.reconciliation_complete = True
         return report
 
     def get_document(self, record_id: str, *, database_id: str, tenant_id: str = "local") -> dict | None:

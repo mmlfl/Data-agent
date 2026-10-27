@@ -43,25 +43,10 @@ from sql_agent.core.storage import (
 from sql_agent.core.tool import ToolCall, ToolContext, ToolSchema, ToolResult
 from sql_agent.core.user import RequestContext, User, UserResolver
 from sql_agent.core.workflow import NoOpWorkflowHandler, WorkflowHandler
+from sql_agent.core.context.window import ContextWindowBudget
+from sql_agent.services.finalization import finalization_call, systematic_sample as _systematic_sample
 
 logger = logging.getLogger(__name__)
-
-
-def _systematic_sample(
-    rows: list[dict[str, Any]], max_rows: int
-) -> list[dict[str, Any]]:
-    """Sample across the complete loaded range instead of biasing to the head."""
-    if max_rows <= 0 or not rows:
-        return []
-    if len(rows) <= max_rows:
-        return rows
-    if max_rows == 1:
-        return [rows[0]]
-    indices = {
-        round(index * (len(rows) - 1) / (max_rows - 1))
-        for index in range(max_rows)
-    }
-    return [rows[index] for index in sorted(indices)]
 
 
 class Agent:
@@ -220,15 +205,14 @@ class Agent:
                 system_prompt, working_message, user
             )
 
-        context_window = self.config.context_window_tokens
+        window_budget = ContextWindowBudget.from_config(self.config)
+        context_window = window_budget.total
         context_refreshed = False
         context_refresh_count = 0
         provider_retries = 0
         force_refresh = False
-        safety_tokens = int(context_window * self.config.context_safety_ratio)
-        input_budget = context_window - safety_tokens - (
-            self.config.max_tokens or self.config.context_output_reserve_tokens
-        )
+        safety_tokens = window_budget.safety
+        input_budget = window_budget.input
 
         tool_context = ToolContext(
             user=user,
@@ -594,29 +578,8 @@ class Agent:
         ):
             source_tool_call_id, dataframe = last_sql_result
             final_source_tool_call_id = source_tool_call_id
-            final_call = ToolCall(
-                id=f"finalize_{uuid.uuid4().hex[:12]}",
-                name=self.config.finalizer_tool_name,
-                arguments={
-                    "question": working_message,
-                    "source_tool_call_id": source_tool_call_id,
-                    "sql": dataframe.sql,
-                    "columns": [
-                        column.model_dump(mode="json")
-                        for column in dataframe.columns
-                    ],
-                    "rows": _systematic_sample(
-                        dataframe.rows, self.config.max_finalize_rows
-                    ),
-                    "row_count": dataframe.row_count,
-                    "row_count_is_exact": dataframe.row_count_is_exact,
-                    "truncated": dataframe.truncated,
-                    "sample_strategy": "systematic",
-                    "draft": finalize_draft,
-                    "partial": reached_tool_limit or request_budget_stopped,
-                    "partial_reason": "time_budget" if request_budget_stopped else "tool_limit",
-                },
-            )
+            final_call = finalization_call(self.config, source_tool_call_id, dataframe, working_message,
+                finalize_draft, tool_limit=reached_tool_limit, time_limit=request_budget_stopped)
 
             yield AgentEvent(type="status", content="summarizing")
             yield AgentEvent(
@@ -717,6 +680,8 @@ class Agent:
             metadata={
                 "conversation_id": conversation.id,
                 "tool_iterations": tool_iterations,
+                "request_id": request_id,
+                "tool_limit_stopped": reached_tool_limit,
                 "finalized": finalized,
                 "source_tool_call_id": final_source_tool_call_id,
                 "query_id": final_query_id,

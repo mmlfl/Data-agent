@@ -30,5 +30,6 @@ export function isUiComponent(value: unknown): value is UiComponent {
     type === "table_list" ||
     type === "table_schema" ||
     type === "final_result"
+    || type === "knowledge"
   );
 }

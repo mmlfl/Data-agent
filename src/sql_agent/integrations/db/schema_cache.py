@@ -90,6 +90,7 @@ class SchemaCache:
 
     def _init_tables(self) -> None:
         with self._connect() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS cache_identity (id INTEGER PRIMARY KEY CHECK(id=1), fingerprint TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tables (
@@ -129,7 +130,9 @@ class SchemaCache:
         if not self.db_path.is_file():
             return False
         try:
-            return self.table_count() > 0
+            with self._connect() as conn:
+                identity = conn.execute("SELECT fingerprint FROM cache_identity WHERE id=1").fetchone()
+            return bool(identity and identity[0] == self.settings.source_fingerprint and self.table_count() > 0)
         except sqlite3.Error:
             return False
 
@@ -174,10 +177,17 @@ class SchemaCache:
             start = datetime.now()
             with self.pool.borrow() as runner:
                 tables, columns = runner.fetch_schema_metadata()
+            included = {row[0] for row in tables}
+            if len(included) != len(tables):
+                raise ValueError("元数据存在重复表名，请明确 Schema 范围")
+            columns = [row for row in columns if row[0] in included]
+            if len({(row[0], row[1]) for row in columns}) != len(columns):
+                raise ValueError("元数据存在重复字段，未替换旧缓存")
 
             # One SQLite transaction keeps readers on the previous snapshot
             # until the complete replacement is committed.
             with self._connect() as sqlite:
+                sqlite.execute("INSERT INTO cache_identity(id,fingerprint,version) VALUES(1,?,1) ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,version=cache_identity.version+1", (self.settings.source_fingerprint,))
                 sqlite.execute("DELETE FROM columns")
                 sqlite.execute("DELETE FROM tables")
                 for table_name, owner, comment in tables:

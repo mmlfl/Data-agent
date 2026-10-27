@@ -66,66 +66,21 @@ def run_api_server() -> None:
 def run_schema_sync(args: argparse.Namespace) -> None:
     """Only this explicit command creates embedding/Milvus resources."""
     import json
-    from contextlib import ExitStack
-    from dataclasses import asdict
 
-    from sql_agent.capabilities.embedding.settings import EmbeddingSettings
-    from sql_agent.integrations.db import DbSettings, SchemaCache, create_sql_runner_pool
-    from sql_agent.integrations.embedding.aliyun import AliyunEmbedder
-    from sql_agent.integrations.milvus.client import create_milvus_client
-    from sql_agent.integrations.milvus.schema_store import MilvusSchemaStore
-    from sql_agent.integrations.milvus.settings import MilvusSettings
-    from sql_agent.integrations.milvus.sync_schema import load_schema_documents
+    from sql_agent.integrations.milvus.sync_schema import execute_schema_sync
 
-    if args.dry_run and args.refresh_cache:
-        raise ValueError("--dry-run 只读取本地缓存，不能同时使用 --refresh-cache")
-    db_settings = DbSettings()
-    milvus_settings = MilvusSettings()
-    database_id = args.database_id if args.database_id is not None else milvus_settings.rag_database_id
-    tenant_id = args.tenant_id if args.tenant_id is not None else milvus_settings.rag_tenant_id
-    if not database_id.strip() or not tenant_id.strip():
-        raise ValueError("请设置 RAG_DATABASE_ID / RAG_TENANT_ID，或传 --database-id / --tenant-id")
-    cache_path = Path(args.cache_path) if args.cache_path else db_settings.resolve_cache_path()
-    name = args.collection or milvus_settings.milvus_schema_collection
-    if args.refresh_cache:
-        pool = create_sql_runner_pool(db_settings)
-        try:
-            SchemaCache(pool, settings=db_settings, db_path=cache_path).sync()
-        finally:
-            pool.close()
-    documents = load_schema_documents(
-        cache_path, database_id=database_id, tenant_id=tenant_id,
-        database_name=args.database_name if args.database_name is not None else milvus_settings.rag_database_name,
-        dialect=db_settings.db_dialect, table_names=args.table,
+    report = execute_schema_sync(
+        cache_path=args.cache_path,
+        database_id=args.database_id,
+        database_name=args.database_name,
+        tenant_id=args.tenant_id,
+        collection=args.collection,
+        table_names=args.table,
+        refresh_cache=args.refresh_cache,
+        dry_run=args.dry_run,
+        force=args.force,
     )
-    if args.dry_run:
-        print(json.dumps({
-            "dry_run": True, "collection": name, "documents": len(documents),
-            "columns": sum(doc.column_count for doc in documents),
-            "largest_document_bytes": max((len(doc.document_text.encode("utf-8")) for doc in documents), default=0),
-            "preview_tables": [doc.table_name for doc in documents[:10]],
-        }, ensure_ascii=False, indent=2))
-        return
-    if not documents:
-        print(json.dumps({"total": 0, "written": 0, "skipped": 0, "collection": name}))
-        return
-    milvus_settings.require_uri()
-    settings = EmbeddingSettings()
-    with ExitStack() as resources:
-        embedder = AliyunEmbedder(settings)
-        resources.callback(embedder.close)
-        # Validate every complete document before any external request.
-        embedder.validate_texts([doc.document_text for doc in documents])
-        client = create_milvus_client(milvus_settings)
-        resources.callback(client.close)
-        store = MilvusSchemaStore(
-            client, embedder=embedder, collection_name=name,
-            timeout=milvus_settings.milvus_action_timeout_seconds,
-            batch_size=settings.batch_size,
-        )
-        report = store.upsert(documents, force=args.force)
-        print(json.dumps({**asdict(report), "collection": name,
-                          "embedding_profile": embedder.profile_id}, ensure_ascii=False, indent=2))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 def main() -> None:

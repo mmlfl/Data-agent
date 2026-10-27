@@ -267,7 +267,8 @@ def _fetch_schema_metadata_on_cursor(cursor: Any) -> Tuple[List[tuple], List[tup
         ORDER BY TABLE_NAME, COLUMN_ID
         """
     )
-    all_columns = cursor.fetchall()
+    included = {row[0] for row in tables}
+    all_columns = [row for row in cursor.fetchall() if row[0] in included]
 
     cursor.execute(
         """

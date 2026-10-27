@@ -12,7 +12,12 @@ from sql_agent.core.events import PROTOCOL_VERSION
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, description="User message")
-    conversation_id: Optional[str] = Field(default=None)
+    conversation_id: Optional[str] = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    run_id: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class MetadataJobRequest(BaseModel):
+    target: Literal["sqlite", "milvus", "knowledge"]
 
 
 class HealthResponse(BaseModel):
@@ -31,6 +36,137 @@ class CacheSyncResponse(BaseModel):
     dialect: str
     table_count: int
     message: str = ""
+
+
+class MilvusSyncResponse(BaseModel):
+    status: str
+    total: int
+    written: int
+    skipped: int = 0
+    collection: str = ""
+    message: str = ""
+
+
+class CachedTable(BaseModel):
+    table_name: str
+    schema_name: str
+    table_comment: str
+    column_count: int
+    synced_at: Optional[str] = None
+
+
+class CacheTablesResponse(BaseModel):
+    available: bool
+    cache_file: str
+    dialect: str
+    total_tables: int
+    total_columns: int
+    last_synced_at: Optional[str] = None
+    schemas: list[str]
+    matched_tables: int
+    offset: int
+    limit: int
+    tables: list[CachedTable]
+
+
+class CachedColumn(BaseModel):
+    column_name: str
+    data_type: Optional[str] = None
+    column_comment: Optional[str] = None
+    is_nullable: Optional[str] = None
+    data_length: Optional[int] = None
+
+
+class CacheTableResponse(BaseModel):
+    table_name: str
+    schema_name: str
+    table_comment: str
+    synced_at: Optional[str] = None
+    columns: list[CachedColumn]
+
+
+class InspectionCheck(BaseModel):
+    label: str
+    ok: bool
+    detail: str
+
+
+class CacheCheckResponse(BaseModel):
+    status: str
+    message: str
+    cache_file: str
+    checks: list[InspectionCheck]
+
+
+class MilvusDocumentSummary(BaseModel):
+    record_id: str
+    schema_name: str
+    table_name: str
+    column_count: int
+    content_hash: str
+    active: bool
+    updated_at: Optional[str] = None
+    comparison: str
+
+
+class MilvusInspectionResponse(BaseModel):
+    status: str
+    message: str
+    connected: bool
+    rag_enabled: bool
+    collection: str
+    milvus_database: str
+    database_id: str
+    tenant_id: str
+    collection_exists: Optional[bool] = None
+    load_state: str
+    can_browse: bool
+    document_count: Optional[int] = None
+    active_count: Optional[int] = None
+    vector_dimensions: Optional[int] = None
+    embedding_profile: Optional[str] = None
+    configured_embedding_profile: str
+    bm25: bool
+    issues: list[str]
+    indexes: list[Dict[str, Any]]
+    matched_total: int
+    browse_total: int
+    truncated: bool
+    scan_limit: int
+    offset: int = 0
+    limit: int = 30
+    documents: list[MilvusDocumentSummary]
+    checked_at: str
+
+
+class MilvusStoredDocument(MilvusDocumentSummary):
+    document_text: str
+    database_name: str
+    dialect: str
+    content_hash_valid: bool
+
+
+class MilvusDocumentResponse(MilvusInspectionResponse):
+    document: Optional[MilvusStoredDocument] = None
+
+
+class MilvusComparison(BaseModel):
+    complete: bool
+    scanned: int
+    sqlite_tables: int
+    matching: int
+    stale: int
+    sqlite_missing: int
+    sqlite_incomplete: int
+    inactive: int
+    identity_mismatch: int
+    duplicate_tables: int
+    milvus_missing: Optional[int] = None
+    consistent: bool
+
+
+class MilvusCheckResponse(MilvusInspectionResponse):
+    comparison: Optional[MilvusComparison] = None
 
 
 class ToolsResponse(BaseModel):

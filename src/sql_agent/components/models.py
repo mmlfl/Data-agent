@@ -20,6 +20,8 @@ ChartAggregation = Literal["none", "sum", "avg", "min", "max", "count"]
 class DataColumn(BaseModel):
     name: str
     data_type: ColumnDataType = "unknown"
+    source_name: Optional[str] = None
+    numeric_encoding: Literal["native", "exact_string"] = "native"
 
 
 class DataFrameComponent(BaseModel):
@@ -82,12 +84,21 @@ class FinalResultComponent(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class KnowledgeComponent(BaseModel):
+    type: Literal["knowledge"] = "knowledge"
+    title: str = "检索依据"
+    kind: Literal["search_schema", "search_sql_memory", "find_join_path"]
+    status: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 UiComponent = Annotated[
     Union[
         DataFrameComponent,
         TableListComponent,
         TableSchemaComponent,
         FinalResultComponent,
+        KnowledgeComponent,
     ],
     Field(discriminator="type"),
 ]

@@ -40,12 +40,19 @@ describe("availableChartTypes", () => {
       y_fields: ["amount"],
     };
     expect(availableChartTypes(data, categorical)).not.toContain("scatter");
-    expect(availableChartTypes(data, numeric)).toContain("scatter");
+    expect(availableChartTypes(data, numeric)).toEqual([]);
+    const points: DataFrameComponent = { ...data, columns: [{ name: "x", data_type: "number" }, { name: "y", data_type: "number" }], rows: [{ x: 1, y: 2 }, { x: 2, y: 4 }] };
+    expect(availableChartTypes(points, { type: "scatter", x_field: "x", y_fields: ["y"] })).toContain("scatter");
   });
 });
 
 describe("prepareSeries", () => {
-  it("sums duplicate x values instead of silently overwriting", () => {
+  it("does not invent aggregation for duplicate rates", () => {
+    const result = prepareSeries([{ month: "one", rate: .4 }, { month: "one", rate: .6 }], { type: "bar", x_field: "month", y_fields: ["rate"], aggregation: "none" }, "bar");
+    expect(result.rows).toEqual([]);
+    expect(result.issue).toBeTruthy();
+  });
+  it("sums duplicate x values only with explicit aggregation", () => {
     const rows = [
       { month: "2026-01", amount: 10 },
       { month: "2026-01", amount: 5 },
@@ -57,7 +64,7 @@ describe("prepareSeries", () => {
         type: "bar",
         x_field: "month",
         y_fields: ["amount"],
-        aggregation: "none",
+        aggregation: "sum",
       },
       "bar",
     );

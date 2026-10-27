@@ -1,55 +1,36 @@
 import { useState } from "react";
-import {
-  DEFAULT_MILVUS_SYNC_URL,
-  validateSyncPath,
-  type SyncTarget,
-} from "../api/metadata";
+import type { SyncTarget } from "../api/metadata";
 import type { SyncExecution } from "../hooks/useMetadataSync";
 import type { HealthResponse } from "../types";
 import { Icon } from "./Icon";
+import { MetadataCacheBrowser } from "./MetadataCacheBrowser";
+import { MetadataMilvusBrowser } from "./MetadataMilvusBrowser";
 
 const LABELS = { sqlite: "SQLite 缓存", milvus: "Milvus collection" };
 const STATUS_LABELS = { running: "同步中", success: "已完成", error: "未完成" };
-const PATH_KEY = "data-agent-milvus-sync-path";
-
-function readPath() {
-  try {
-    // Preserve an interface path saved before the workspace was renamed.
-    const stored =
-      localStorage.getItem(PATH_KEY) ||
-      localStorage.getItem("vanna-milvus-sync-path");
-    const path = validateSyncPath(stored || DEFAULT_MILVUS_SYNC_URL);
-    if (stored) localStorage.setItem(PATH_KEY, path);
-    return path;
-  } catch {
-    return "/api/milvus/sync";
-  }
-}
 
 function formatTime(value: number) {
   return new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
 interface MetadataManagerProps {
+  active?: boolean;
   health: HealthResponse | null;
   healthError: string | null;
   executions: SyncExecution[];
   activeTarget: SyncTarget | null;
-  onSync: (target: SyncTarget, path: string, token: string) => void;
+  onSync: (target: SyncTarget) => void;
 }
 
 export function MetadataManager({
+  active = true,
   health,
   healthError,
   executions,
   activeTarget,
   onSync,
 }: MetadataManagerProps) {
-  const [path, setPath] = useState(readPath);
-  const [draftPath, setDraftPath] = useState(path);
-  const [token, setToken] = useState("");
-  const [pathError, setPathError] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [inspectionTab, setInspectionTab] = useState<SyncTarget>("sqlite");
   const busy = activeTarget !== null;
   const canSyncCache = Boolean(health?.with_db && !healthError);
   const latest = (target: SyncTarget) =>
@@ -58,23 +39,6 @@ export function MetadataManager({
     executions.find(
       (item) => item.target === target && item.status === "success",
     );
-  const savePath = () => {
-    try {
-      const normalized = validateSyncPath(draftPath);
-      setPath(normalized);
-      setDraftPath(normalized);
-      setPathError("");
-      setSaved(true);
-      try {
-        localStorage.setItem(PATH_KEY, normalized);
-      } catch {
-        /* Still usable for this session. */
-      }
-    } catch (error) {
-      setPathError((error as Error).message);
-      setSaved(false);
-    }
-  };
 
   return (
     <div className="metadata-page">
@@ -130,6 +94,16 @@ export function MetadataManager({
           </div>
         </div>
       </section>
+      <div className="metadata-inspection-tabs" role="tablist" aria-label="选择检查与浏览的数据源">
+        <button type="button" role="tab" id="sqlite-inspection-tab" aria-controls="sqlite-inspection-panel" aria-selected={inspectionTab === "sqlite"} onClick={() => setInspectionTab("sqlite")}><Icon name="database" size={16} />SQLite 缓存</button>
+        <button type="button" role="tab" id="milvus-inspection-tab" aria-controls="milvus-inspection-panel" aria-selected={inspectionTab === "milvus"} onClick={() => setInspectionTab("milvus")}><Icon name="layers" size={16} />Milvus 文档</button>
+      </div>
+      <div id="sqlite-inspection-panel" role="tabpanel" aria-labelledby="sqlite-inspection-tab" hidden={inspectionTab !== "sqlite"}>
+        <MetadataCacheBrowser enabled={active && inspectionTab === "sqlite"} refreshKey={latestSuccess("sqlite")?.finishedAt} />
+      </div>
+      <div id="milvus-inspection-panel" role="tabpanel" aria-labelledby="milvus-inspection-tab" hidden={inspectionTab !== "milvus"}>
+        <MetadataMilvusBrowser enabled={active && inspectionTab === "milvus"} refreshKey={latestSuccess("milvus")?.finishedAt} />
+      </div>
       <div className="sync-grid">
         {(["sqlite", "milvus"] as const).map((target) => {
           const last = latest(target);
@@ -231,7 +205,7 @@ export function MetadataManager({
                     (target === "sqlite" && !canSyncCache) ||
                     (target === "milvus" && Boolean(healthError))
                   }
-                  onClick={() => onSync(target, path, token)}
+                  onClick={() => onSync(target)}
                 >
                   <Icon
                     name="refresh"
@@ -254,76 +228,13 @@ export function MetadataManager({
           );
         })}
       </div>
-      <details className="metadata-settings">
-        <summary>
-          <span>
-            <Icon name="settings" size={16} />
-            接口设置
-          </span>
-          <span>
-            Milvus 同步地址与可选凭据
-            <Icon name="chevron" size={13} />
-          </span>
-        </summary>
-        <div className="metadata-settings__body">
-          <p>
-            当前项目提供 SQLite 同步接口；Milvus
-            目前只有命令行入口。请在后端提供 HTTP
-            同步接口后，将实际路径填在这里。按钮会发送 POST
-            请求，接口未接通时会显示原因。
-          </p>
-          <label htmlFor="milvus-path">Milvus 同步接口路径</label>
-          <div className="settings-input-row">
-            <input
-              id="milvus-path"
-              value={draftPath}
-              onChange={(e) => {
-                setDraftPath(e.target.value);
-                setSaved(false);
-              }}
-              placeholder="/api/milvus/sync"
-              spellCheck={false}
-              disabled={busy}
-            />
-            <button
-              type="button"
-              className="action-button"
-              onClick={savePath}
-              disabled={busy}
-            >
-              {saved ? "已保存" : "保存路径"}
-            </button>
-          </div>
-          {pathError && (
-            <span className="field-error" role="alert">
-              {pathError}
-            </span>
-          )}
-          <label htmlFor="sync-token">
-            同步凭据 <small>可选 · 仅在当前页面内存中使用</small>
-          </label>
-          <input
-            id="sync-token"
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            autoComplete="off"
-            placeholder="后端配置了同步校验时填写"
-            disabled={busy}
-          />
-          <small>
-            SQLite 使用 X-Cache-Sync-Token，Milvus 使用
-            X-Milvus-Sync-Token。当前路径：{path}
-          </small>
-        </div>
-      </details>
       <section className="sync-history">
         <div className="section-caption">
           <span>
             <Icon name="clock" size={16} />
             同步记录
           </span>
-          <small>保留本次打开期间的最近 30 次操作</small>
+          <small>最近 30 次任务，刷新后可恢复</small>
         </div>
         {executions.length === 0 ? (
           <div className="sync-history__empty">

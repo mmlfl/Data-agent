@@ -11,6 +11,7 @@ export interface StreamChatOptions {
   conversationId?: string;
   onEvent: (event: AgentEvent) => void;
   signal?: AbortSignal;
+  runId?: string;
 }
 
 export async function streamChat({
@@ -18,6 +19,7 @@ export async function streamChat({
   conversationId,
   onEvent,
   signal,
+  runId,
 }: StreamChatOptions): Promise<void> {
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -25,6 +27,7 @@ export async function streamChat({
     body: JSON.stringify({
       message,
       conversation_id: conversationId ?? null,
+      run_id: runId,
     }),
     signal,
   });
@@ -47,25 +50,28 @@ export async function streamChat({
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let terminal = false;
 
   const consumeLine = (line: string): boolean => {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) return false;
     const data = trimmed.slice(5).trim();
-    if (data === "[DONE]") return true;
+    if (data === "[DONE]") {
+      if (!terminal) throw new Error("连接已结束，但分析没有返回完成状态，请核对本轮运行记录。");
+      return true;
+    }
     if (!data) return false;
-    try {
-      const parsed = JSON.parse(data) as unknown;
+    let parsed: unknown;
+    try { parsed = JSON.parse(data) as unknown; }
+    catch { throw new Error("分析事件格式异常，已保留收到的内容，请核对运行记录。"); }
       if (
         parsed &&
         typeof parsed === "object" &&
         typeof (parsed as { type?: unknown }).type === "string"
       ) {
+        if ((parsed as AgentEvent).type === "done") terminal = true;
         onEvent(parsed as AgentEvent);
       }
-    } catch {
-      // Ignore a malformed event while keeping the remaining stream usable.
-    }
     return false;
   };
 
@@ -86,4 +92,5 @@ export async function streamChat({
   }
 
   if (buffer && consumeLine(buffer)) return;
+  if (!terminal) throw new Error("分析连接中断，尚未收到完成状态。已收到的内容已保留。");
 }

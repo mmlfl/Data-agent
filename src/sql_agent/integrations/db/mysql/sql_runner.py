@@ -232,7 +232,8 @@ def fetch_schema_metadata(raw_connection: Any) -> Tuple[List[tuple], List[tuple]
             ORDER BY TABLE_NAME, ORDINAL_POSITION
             """
         )
-        columns = list(cursor.fetchall())
+        included = {row[0] for row in tables}
+        columns = [row for row in cursor.fetchall() if row[0] in included]
         return tables, columns
     finally:
         cursor.close()

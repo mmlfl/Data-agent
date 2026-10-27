@@ -18,6 +18,7 @@ export interface ChatMessage {
   error?: string | null;
   queryId?: string | null;
   confirmedQuestion?: string | null;
+  runId?: string;
 }
 
 export type ToolCallStatus = "running" | "success" | "error";

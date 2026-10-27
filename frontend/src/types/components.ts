@@ -8,6 +8,8 @@ export type ColumnDataType =
 export interface DataColumn {
   name: string;
   data_type: ColumnDataType;
+  source_name?: string | null;
+  numeric_encoding?: "native" | "exact_string";
 }
 
 export interface DataFrameComponent {
@@ -73,7 +75,21 @@ export interface FinalResultComponent {
   warnings: string[];
 }
 
+export interface KnowledgeComponent {
+  type: "knowledge";
+  title: string;
+  kind: "search_schema" | "search_sql_memory" | "find_join_path";
+  status: string;
+  payload: {
+    tables?: { table_key?: string; table_name: string }[];
+    examples?: { question: string; sql: string; source_query_id: string }[];
+    path?: string[]; relations?: Record<string, unknown>[]; candidates?: Record<string, unknown>[];
+    message?: string; note?: string; missing_tables?: string[];
+  };
+}
+
 export type UiComponent =
+  | KnowledgeComponent
   | DataFrameComponent
   | TableListComponent
   | TableSchemaComponent

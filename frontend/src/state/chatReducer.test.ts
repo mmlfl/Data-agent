@@ -58,6 +58,14 @@ function startedState() {
 }
 
 describe("chatReducer", () => {
+  it("keeps repeated provider tool IDs separate across runs", () => {
+    let state = startedState();
+    for (const run of ["first", "second"]) {
+      state = chatReducer(state, { type: "event", assistantId: "a1", receivedAt: 1,
+        event: evt({ type: "tool_result", tool_name: "run_sql", tool_call_id: "same-id", ui_component: dataframe, metadata: { success: true, run_id: run } }) });
+    }
+    expect(state.resultOrder).toEqual(["first:same-id", "second:same-id"]);
+  });
   it("restores a conversation with its results and context after opening a new analysis", () => {
     const archived = {
       ...startedState(),

@@ -180,7 +180,7 @@ def _validate_chart(
     if requested.type == "none":
         return requested, None
 
-    types = {column.name: column.data_type for column in args.columns}
+    types = {column.name: column.data_type if column.numeric_encoding == "native" else "string" for column in args.columns}
     if not requested.x_field or requested.x_field not in types:
         return _fallback_chart(args), "图表横轴字段无效，已自动调整"
     valid_y = [field for field in requested.y_fields if field in types]
@@ -222,8 +222,7 @@ def _validate_chart(
         and aggregation == "none"
         and has_duplicates
     ):
-        aggregation = "sum"
-        adjustments.append("存在重复维度，已按 sum 聚合后再绘图")
+        return ChartSpec(type="none", reason="同一维度存在多条数据，需先明确分组或业务聚合口径"), "重复维度未声明聚合方式，已保留数据表，请明确口径后生成图表"
 
     return (
         requested.model_copy(
